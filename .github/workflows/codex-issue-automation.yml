@@ -1,0 +1,331 @@
+name: Codex Issue Automation
+
+on:
+  issues:
+    types: [labeled]
+  pull_request:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: read
+
+jobs:
+  codex:
+    if: github.event_name == 'issues' && github.event.label.name == 'codex'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v5
+
+      - name: Classify issue
+        id: issue_type
+        run: |
+          issue_title=$(cat <<'EOF'
+          ${{ github.event.issue.title }}
+          EOF
+          )
+          issue_body=$(cat <<'EOF'
+          ${{ github.event.issue.body }}
+          EOF
+          )
+
+          issue_kind="generic"
+          requires_android_changes="false"
+          allow_workflow_changes="false"
+
+          if printf '%s\n' "$issue_title" | grep -q '^\[impl\]'; then
+            issue_kind="implementation"
+            requires_android_changes="true"
+          elif printf '%s\n' "$issue_title" | grep -q '^\[fix\]'; then
+            issue_kind="fix"
+            requires_android_changes="true"
+          elif printf '%s\n' "$issue_title" | grep -q '^\[docs\]'; then
+            issue_kind="docs"
+          elif printf '%s\n' "$issue_title" | grep -q '^\[chore\]'; then
+            issue_kind="chore"
+          fi
+
+          if printf '%s\n' "$issue_title" | grep -qi 'workflow' \
+            || printf '%s\n' "$issue_body" | grep -qi 'explicitly permits workflow changes'; then
+            allow_workflow_changes="true"
+            requires_android_changes="false"
+          fi
+
+          echo "kind=$issue_kind" >> "$GITHUB_OUTPUT"
+          echo "requires_android_changes=$requires_android_changes" >> "$GITHUB_OUTPUT"
+          echo "allow_workflow_changes=$allow_workflow_changes" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare prompt
+        run: |
+          cp .codex/prompt.md /tmp/codex-prompt.md
+
+          allow_workflow_changes=$(cat <<'EOF'
+          ${{ steps.issue_type.outputs.allow_workflow_changes }}
+          EOF
+          )
+
+          cat >> /tmp/codex-prompt.md << 'EOF'
+
+          ---
+
+          ## Runtime Context
+
+          Before making changes, read:
+          - AGENTS.md
+          - docs/ai/ARCHITECTURE.md
+          - docs/ai/TESTING.md
+          - docs/ai/DECISIONS.md
+          - .codex/prompt.md
+
+          Relevant Android skills may be read when necessary:
+          - .codex/skills/android-cli/SKILL.md
+          - .codex/skills/testing-setup/SKILL.md
+          - .codex/skills/styles/SKILL.md
+          - .codex/skills/navigation-3/SKILL.md
+
+          Issue title:
+          ${{ github.event.issue.title }}
+
+          Issue body:
+          ${{ github.event.issue.body }}
+
+          Detected issue kind:
+          ${{ steps.issue_type.outputs.kind }}
+
+          Rules:
+          - Follow AGENTS.md
+          - Follow .codex/prompt.md
+          - If the issue explicitly allows scope overrides, follow the issue scope
+          - Do not modify forbidden files
+          - For implementation issues, do not finish with only .codex, prompt, or documentation changes
+          - For implementation issues, include at least one behavior-related change under app/** and validate it with tests when possible
+          - If repository policy blocks the required code path, stop and report the blocked path clearly
+          - Do not touch workflows, deploy, infra, signing configs, or secrets unless the issue explicitly allows it
+          - PR title must exactly match the related Issue title
+          - Write PR body section titles in English
+          - Write PR body contents in Japanese
+          - Run ./gradlew ktlintCheck, ./gradlew detekt, ./gradlew test when possible
+          - Run ./gradlew connectedCheck only when an Android device or emulator is available
+          - If checks fail, record the failure and continue
+          - Stop if approval is required, except workflow changes explicitly permitted by issue scope
+          - Keep changes focused on the issue only
+          - Read `.github/pull_request_template.md`
+          - Generate COMPLETE PR body
+          - Replace all placeholders
+          - Save PR body to /tmp/pr-body.md
+          EOF
+
+          if [ "$allow_workflow_changes" = "true" ]; then
+            cat >> /tmp/codex-prompt.md << 'EOF'
+          - Workflow changes requested by this issue are explicitly approved by a human reviewer
+          - Do not stop for additional approval when editing .github/workflows/* files that are in issue scope
+          EOF
+          fi
+
+      - name: Run Codex
+        id: codex
+        uses: openai/codex-action@v1.6
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt-file: /tmp/codex-prompt.md
+          sandbox: workspace-write
+          safety-strategy: drop-sudo
+
+      - name: Get changed files
+        id: changes
+        run: |
+          changed_files=$(
+            {
+              git diff --name-only
+              git ls-files --others --exclude-standard
+            } | sort -u
+          )
+          echo "files<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$changed_files" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Check forbidden paths
+        run: |
+          forbidden=(
+            "infra/"
+            "deploy/"
+            "secrets/"
+            ".env"
+            ".env.local"
+            "signing/"
+          )
+
+          allow_workflow_changes=$(cat <<'EOF'
+          ${{ steps.issue_type.outputs.allow_workflow_changes }}
+          EOF
+          )
+
+          if [ "$allow_workflow_changes" != "true" ]; then
+            forbidden+=(".github/workflows/")
+          fi
+
+          files=$(cat <<'EOF'
+          ${{ steps.changes.outputs.files }}
+          EOF
+          )
+
+          echo "$files" | while read -r file; do
+            [ -n "$file" ] || continue
+
+            for path in "${forbidden[@]}"; do
+              if [[ "$file" == *"$path"* ]]; then
+                echo "::warning::Forbidden file changed: $file"
+                git checkout -- "$file"
+              fi
+            done
+          done
+
+      - name: Check dangerous commands
+        run: |
+          forbidden_commands=(
+            "sudo"
+            "curl | sh"
+            "wget | sh"
+            "chmod 777"
+            "mkfs"
+            "dd if="
+            "shutdown"
+            "reboot"
+            "systemctl"
+            "docker system prune"
+            "git push --force"
+            "git reset --hard"
+            "nohup"
+            "tmux"
+            "screen"
+            "disown"
+          )
+
+          files=$(
+            {
+              git diff --name-only
+              git ls-files --others --exclude-standard
+            } | sort -u
+          )
+
+          for file in $files; do
+            [ -f "$file" ] || continue
+
+            for command in "${forbidden_commands[@]}"; do
+              if grep -q "$command" "$file"; then
+                echo "Forbidden command detected in $file: $command"
+                grep "$command" "$file"
+                exit 1
+              fi
+            done
+          done
+
+      - name: Check meaningful changes
+        run: |
+          meaningful_files=$(
+            {
+              git diff --name-only
+              git ls-files --others --exclude-standard
+            } | grep -v '^\.\?codex/' | sort -u
+          )
+
+          echo "Changed files after guards:"
+          echo "$meaningful_files"
+
+          if [ -n "$meaningful_files" ]; then
+            echo "Valid changes"
+          else
+            echo "No meaningful changes"
+            exit 1
+          fi
+
+      - name: Require Android implementation file changes
+        run: |
+          requires_android_changes=$(cat <<'EOF'
+          ${{ steps.issue_type.outputs.requires_android_changes }}
+          EOF
+          )
+
+          if [ "$requires_android_changes" = "true" ]; then
+            files=$(
+              {
+                git diff --name-only
+                git ls-files --others --exclude-standard
+              } | sort -u
+            )
+
+            if echo "$files" | grep -qE '^(app/|tests/)'; then
+              echo "Android implementation-related files changed"
+            else
+              echo "Expected changes under app/ or tests/ for issue kind: ${{ steps.issue_type.outputs.kind }}"
+              exit 1
+            fi
+          fi
+
+      - name: Run checks
+        continue-on-error: true
+        run: |
+          ./gradlew ktlintCheck
+          ./gradlew detekt
+          ./gradlew test
+
+      - name: Check if changes exist
+        id: diffcheck
+        run: |
+          if git diff --quiet -- . ':(exclude).codex' && [ -z "$(git ls-files --others --exclude-standard | grep -v '^\.\?codex/')" ]; then
+            echo "no_changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "no_changes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create Pull Request
+        if: steps.diffcheck.outputs.no_changes == 'false'
+        uses: peter-evans/create-pull-request@v8.1.1
+        with:
+          token: ${{ secrets.CODEX_PR_TOKEN }}
+          commit-message: "Issue #${{ github.event.issue.number }}"
+          title: "${{ github.event.issue.title }}"
+          body-path: /tmp/pr-body.md
+          draft: true
+          branch: codex/issue-${{ github.event.issue.number }}
+
+  quality-gate:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v5
+
+      - name: ktlint
+        run: ./gradlew ktlintCheck
+
+      - name: detekt
+        run: ./gradlew detekt
+
+      - name: Unit tests
+        run: ./gradlew test
