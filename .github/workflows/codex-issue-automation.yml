@@ -298,7 +298,7 @@ jobs:
         if: steps.diffcheck.outputs.no_changes == 'false'
         uses: peter-evans/create-pull-request@v8.1.1
         with:
-          token: ${{ secrets.CODEX_PR_TOKEN }}
+          token: ${{ github.token }}
           commit-message: "Issue #${{ github.event.issue.number }}"
           title: "${{ github.event.issue.title }}"
           body-path: /tmp/pr-body.md
