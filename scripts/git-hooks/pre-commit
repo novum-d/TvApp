@@ -1,0 +1,53 @@
+#!/bin/bash
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+echo "Running detekt check with Gradle..."
+
+# staged Kotlin files がない場合は Gradle の detekt 実行を省略する
+cachedFiles="$(
+  git --no-pager diff \
+    --diff-filter=d \
+    --name-only \
+    --cached
+)"
+echo -e "\n"
+echo "Cached Files:"
+echo "$cachedFiles"
+echo -e "\n"
+
+echo
+
+# ktファイルのみ抽出
+KOTLIN_INPUT=$(echo "$cachedFiles" | grep -E "\.kt$" || true)
+
+# コマンド入力がない場合は、解析せずに正常終了
+if [ -z "$KOTLIN_INPUT" ]; then
+  echo "No Kotlin files to check. Skipping detekt."
+  exit 0
+fi
+
+cd "$REPO_ROOT"
+
+OUTPUT=$(./gradlew detektFormat detekt 2>&1) || {
+  echo "***********************************************"
+  echo "                 detekt failed                 "
+  echo " Please fix the above issues before committing "
+  echo "***********************************************"
+  echo "$OUTPUT"
+  exit 1
+}
+
+echo "$OUTPUT"
+
+if ! git diff --quiet -- $KOTLIN_INPUT; then
+  echo "***********************************************"
+  echo "          detekt formatting changed files      "
+  echo " Please review and stage formatted files first "
+  echo "***********************************************"
+  git --no-pager diff --name-only -- $KOTLIN_INPUT
+  exit 1
+fi
+
+echo "detekt passed."

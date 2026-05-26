@@ -282,8 +282,9 @@ jobs:
       - name: Run checks
         continue-on-error: true
         run: |
-          ./gradlew ktlintCheck
+          ./gradlew detektFormatCheck
           ./gradlew detekt
+          ./gradlew ktlintCheck
           ./gradlew test
 
       - name: Check if changes exist
@@ -322,11 +323,11 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v5
 
+      - name: detekt
+        run: ./gradlew detektFormatCheck detekt
+
       - name: ktlint
         run: ./gradlew ktlintCheck
-
-      - name: detekt
-        run: ./gradlew detekt
 
       - name: Unit tests
         run: ./gradlew test

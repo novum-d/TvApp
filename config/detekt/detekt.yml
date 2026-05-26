@@ -1,0 +1,222 @@
+build:
+  maxIssues: 1
+  excludeCorrectable: false
+  weights:
+    complexity: 1
+    LongParameterList: 1
+    style: 1
+    comments: 1
+
+config:
+  validation: true
+  warningsAsErrors: false
+  checkExhaustiveness: false
+  excludes: ""
+
+processors:
+  active: true
+
+console-reports:
+  active: true
+
+output-reports:
+  active: true
+
+comments:
+  active: true
+
+complexity:
+  active: true
+  CognitiveComplexMethod:
+    active: false
+  NamedArguments:
+    active: true
+    threshold: 3
+  # for compose
+  LongParameterList:
+    active: true
+    functionThreshold: 10
+    ignoreDefaultParameters: true
+  TooManyFunctions:
+    active: true
+    ignoreAnnotatedFunctions: ["Preview"]
+  LongMethod:
+    active: true
+    threshold: 150
+
+coroutines:
+  active: true
+
+empty-blocks:
+  active: true
+
+exceptions:
+  active: true
+  ObjectExtendsThrowable:
+    active: true
+  TooGenericExceptionCaught:
+    active: false
+
+naming:
+  active: true
+  # for compose
+  FunctionNaming:
+    active: true
+    functionPattern: "[a-zA-Z][a-zA-Z0-9]*"
+    ignoreAnnotated: ["Composable"]
+  TopLevelPropertyNaming:
+    active: true
+    constantPattern: "([A-Z][_A-Z0-9]*|[A-Z][A-Za-z0-9]*)"
+
+performance:
+  active: true
+
+potential-bugs:
+  active: true
+  CastNullableToNonNullableType:
+    active: true
+  CastToNullableType:
+    active: true
+  Deprecation:
+    active: true
+  DontDowncastCollectionTypes:
+    active: true
+  ElseCaseInsteadOfExhaustiveWhen:
+    active: true
+    ignoredSubjectTypes: []
+  ExitOutsideMain:
+    active: true
+  ImplicitUnitReturnType:
+    active: true
+  LateinitUsage:
+    active: true
+  NullCheckOnMutableProperty:
+    active: true
+  NullableToStringCall:
+    active: true
+  PropertyUsedBeforeDeclaration:
+    active: true
+  UnconditionalJumpStatementInLoop:
+    active: true
+  UnnecessaryNotNullCheck:
+    active: true
+  UnsafeCallOnNullableType:
+    active: true
+
+style:
+  active: true
+  BracesOnIfStatements:
+    active: true
+    singleLine: "necessary"
+    multiLine: "always"
+  BracesOnWhenStatements:
+    active: true
+    singleLine: "necessary"
+    multiLine: "necessary"
+  CanBeNonNullable:
+    active: true
+  CascadingCallWrapping:
+    active: true
+    includeElvis: true
+  ClassOrdering:
+    active: true
+  CollapsibleIfStatements:
+    active: true
+  DoubleNegativeLambda:
+    active: true
+    negativeFunctions:
+      - reason: "Use `takeIf` instead."
+        value: "takeUnless"
+      - reason: "Use `all` instead."
+        value: "none"
+    negativeFunctionNameParts:
+      - "not"
+      - "non"
+  EqualsOnSignatureLine:
+    active: true
+  ExplicitCollectionElementAccessMethod:
+    active: true
+  ExplicitItLambdaParameter:
+    active: true
+  ExpressionBodySyntax:
+    active: true
+    includeLineWrapping: false
+  ForbiddenAnnotation:
+    active: true
+  ForbiddenImport:
+    active: true
+  ForbiddenMethodCall:
+    active: true
+  ForbiddenSuppress:
+    active: true
+    rules: []
+  ForbiddenComment:
+    allowedPatterns: "TODO*"
+  MandatoryBracesLoops:
+    active: true
+  MultilineLambdaItParameter:
+    active: true
+  NoTabs:
+    active: true
+  NullableBooleanCheck:
+    active: true
+  OptionalUnit:
+    active: true
+  PreferToOverPairSyntax:
+    active: true
+  SpacingBetweenPackageAndImports:
+    active: true
+  StringShouldBeRawString:
+    active: true
+    maxEscapedCharacterCount: 2
+    ignoredCharacters: []
+  TrailingWhitespace:
+    active: true
+  ReturnCount:
+    active: true
+    max: 5
+  DestructuringDeclarationWithTooManyEntries:
+    active: true
+    maxDestructuringEntries: 7
+  # for compose
+  MagicNumber:
+    active: false
+  UnusedPrivateMember:
+    active: false
+
+TwitterCompose:
+  CompositionLocalAllowlist:
+    active: true
+  CompositionLocalNaming:
+    active: true
+  ContentEmitterReturningValues:
+    active: true
+  ModifierComposable:
+    active: false
+  ModifierMissing:
+    active: false
+  ModifierReused:
+    active: false
+  ModifierWithoutDefault:
+    active: false
+  MultipleEmitters:
+    active: true
+  MutableParams:
+    active: true
+  ComposableNaming:
+    active: true
+  ComposableParamOrder:
+    active: true
+  PreviewNaming:
+    active: true
+  PreviewPublic:
+    active: true
+  RememberMissing:
+    active: true
+
+  UnstableCollections:
+    active: false
+  ViewModelForwarding:
+    active: true
+  ViewModelInjection:
+    active: true
