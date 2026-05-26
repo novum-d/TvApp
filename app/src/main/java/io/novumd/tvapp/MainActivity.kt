@@ -2,15 +2,24 @@ package io.novumd.tvapp
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.tooling.preview.Preview
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.viewmodel.compose.viewModel
+import io.novumd.tvapp.ble.requiredBleScanPermissions
+import io.novumd.tvapp.ui.scan.BleScanScreen
+import io.novumd.tvapp.ui.scan.BleScanViewModel
 import io.novumd.tvapp.ui.theme.TvAppTheme
 
 class MainActivity : ComponentActivity() {
@@ -19,29 +28,42 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             TvAppTheme {
+                val viewModel: BleScanViewModel = viewModel()
+                val uiState by viewModel.uiState.collectAsState()
+                val permissionLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestMultiplePermissions(),
+                ) {
+                    viewModel.onPermissionResult()
+                }
+
+                LaunchedEffect(Unit) {
+                    viewModel.refreshEnvironmentState()
+                }
+
+                DisposableEffect(lifecycle) {
+                    val observer = LifecycleEventObserver { _, event ->
+                        if (event == Lifecycle.Event.ON_RESUME) {
+                            viewModel.refreshEnvironmentState()
+                        }
+                    }
+                    lifecycle.addObserver(observer)
+                    onDispose {
+                        lifecycle.removeObserver(observer)
+                    }
+                }
+
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    Greeting(
-                        name = "Android",
-                        modifier = Modifier.padding(innerPadding)
+                    BleScanScreen(
+                        uiState = uiState,
+                        onStartScan = viewModel::startScan,
+                        onStopScan = viewModel::stopScan,
+                        onRequestPermissions = {
+                            permissionLauncher.launch(requiredBleScanPermissions())
+                        },
+                        modifier = Modifier.padding(innerPadding),
                     )
                 }
             }
         }
-    }
-}
-
-@Composable
-fun Greeting(name: String, modifier: Modifier = Modifier) {
-    Text(
-        text = "Hello $name!",
-        modifier = modifier
-    )
-}
-
-@Preview(showBackground = true)
-@Composable
-fun GreetingPreview() {
-    TvAppTheme {
-        Greeting("Android")
     }
 }
