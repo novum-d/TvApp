@@ -1,10 +1,12 @@
 package io.novumd.tvapp.ble
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.content.Context
+import androidx.annotation.RequiresPermission
 
 class BleScanner(
     private val context: Context,
@@ -92,9 +94,17 @@ class BleScanner(
             scanCallback = callback
             BleScanStartResult.Started
         } catch (_: SecurityException) {
+            // 確認→API呼び出しの間に発生するレースコンディションのフォールバック
             BleScanStartResult.PermissionMissing(context.missingBleScanPermissions())
         } catch (exception: IllegalStateException) {
+            // Bluetooth OFF, Adapter無効状態, Bluetooth service restartなど
             BleScanStartResult.Error(exception.message ?: "Unable to start BLE scan")
+        } catch (exception: IllegalArgumentException) {
+            // 不正な ScanCallback/ScanSettings/ScanFilter ,内部状態不整合など
+            BleScanStartResult.Error(exception.message ?: "Invalid BLE scan request")
+        } catch (exception: RuntimeException) {
+            // その他OEM差分, 接続の不安定さなど
+            BleScanStartResult.Error(exception.message ?: "Unexpected BLE scan error")
         }
     }
 
@@ -114,6 +124,7 @@ class BleScanner(
                 ),
             )
         } catch (exception: SecurityException) {
+            // 権限不足
             onLog(
                 scanLog(
                     callbackName = "BluetoothLeScanner.stopScan",
@@ -123,9 +134,21 @@ class BleScanner(
                     message = exception.message ?: "Missing permission while stopping BLE scan",
                 ),
             )
+        } catch (exception: RuntimeException) {
+            // その他OEM差分, 接続の不安定さなど
+            onLog(
+                scanLog(
+                    callbackName = "BluetoothLeScanner.stopScan",
+                    gattStatus = "unexpectedBLEScanError",
+                    connectionState = "error",
+                    targetDevice = "none",
+                    message = exception.message ?: "Unexpected BLE scan error",
+                ),
+            )
         }
     }
 
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     private fun ScanResult.toDiscoveredBleDevice(): DiscoveredBleDevice {
         val deviceName = scanRecord?.deviceName ?: device.name ?: "Unknown device"
         return DiscoveredBleDevice(
