@@ -48,7 +48,10 @@ class BleScanner(
         }
 
         val callback = object : ScanCallback() {
-            override fun onScanResult(callbackType: Int, result: ScanResult) {
+            override fun onScanResult(
+                callbackType: Int,
+                result: ScanResult,
+            ) {
                 val device = result.toDiscoveredBleDevice()
                 onDeviceFound(device)
                 onLog(

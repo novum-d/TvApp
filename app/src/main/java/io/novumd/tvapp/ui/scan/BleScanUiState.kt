@@ -3,7 +3,7 @@ package io.novumd.tvapp.ui.scan
 import io.novumd.tvapp.ble.BleLogEntry
 import io.novumd.tvapp.ble.DiscoveredBleDevice
 
-private const val MaxVisibleLogEntries = 200
+private const val MAX_VISIBLE_LOG_ENTRIES = 200
 
 data class BleScanUiState(
     val status: BleScanStatus = BleScanStatus.Stopped,
@@ -24,6 +24,4 @@ enum class BleScanStatus {
 fun appendVisibleLog(
     logs: List<BleLogEntry>,
     entry: BleLogEntry,
-): List<BleLogEntry> {
-    return listOf(entry).plus(logs).take(MaxVisibleLogEntries)
-}
+): List<BleLogEntry> = listOf(entry).plus(logs).take(MAX_VISIBLE_LOG_ENTRIES)
