@@ -1,0 +1,50 @@
+formatting:
+  active: true
+  android: true
+  autoCorrect: true
+  ClassName:
+    active: true
+  ContextReceiverMapping:
+    active: true
+  DiscouragedCommentLocation:
+    active: true
+  EnumWrapping:
+    active: true
+  FunctionSignature:
+    active: true
+    forceMultilineWhenParameterCountGreaterOrEqualThan: 2
+  IfElseBracing:
+    active: true
+  NoBlankLineInList:
+    active: true
+  NoConsecutiveComments:
+    active: true
+  NoSingleLineBlockComment:
+    active: false
+  TryCatchFinallySpacing:
+    active: true
+  TypeArgumentListSpacing:
+    active: true
+  TypeParameterListSpacing:
+    active: true
+  TrailingCommaOnDeclarationSite:
+    active: true
+  Indentation:
+    active: true
+    indentSize: 4
+  MaximumLineLength:
+    active: true
+    maxLineLength: 120
+    ignoreBackTickedIdentifier: true
+    excludePackageStatements: true
+    excludeImportStatements: true
+  NoTrailingSpaces:
+    active: true
+  NoWildcardImports:
+    active: true
+  ParameterListWrapping:
+    active: true
+  SpacingAroundColon:
+    active: true
+  SpacingAroundComma:
+    active: true
