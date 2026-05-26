@@ -121,7 +121,7 @@ jobs:
           - PR title must exactly match the related Issue title
           - Write PR body section titles in English
           - Write PR body contents in Japanese
-          - Run ./gradlew ktlintCheck, ./gradlew detekt, ./gradlew test when possible
+          - Run ./gradlew detektFormatCheck, ./gradlew detekt, ./gradlew test when possible
           - Run ./gradlew connectedCheck only when an Android device or emulator is available
           - If checks fail, record the failure and continue
           - Stop if approval is required, except workflow changes explicitly permitted by issue scope
@@ -284,7 +284,6 @@ jobs:
         run: |
           ./gradlew detektFormatCheck
           ./gradlew detekt
-          ./gradlew ktlintCheck
           ./gradlew test
 
       - name: Check if changes exist
@@ -325,9 +324,6 @@ jobs:
 
       - name: detekt
         run: ./gradlew detektFormatCheck detekt
-
-      - name: ktlint
-        run: ./gradlew ktlintCheck
 
       - name: Unit tests
         run: ./gradlew test
