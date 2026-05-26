@@ -21,6 +21,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import io.novumd.tvapp.ble.BleConnectionStatus
 import io.novumd.tvapp.ble.BleLogEntry
 import io.novumd.tvapp.ble.DiscoveredBleDevice
 import io.novumd.tvapp.ble.formatForDisplay
@@ -31,6 +32,8 @@ fun BleScanScreen(
     uiState: BleScanUiState,
     onStartScan: () -> Unit,
     onStopScan: () -> Unit,
+    onConnectDevice: (DiscoveredBleDevice) -> Unit,
+    onDisconnectDevice: () -> Unit,
     onRequestPermissions: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -56,6 +59,11 @@ fun BleScanScreen(
         )
         DeviceList(
             devices = uiState.devices,
+            selectedDevice = uiState.selectedDevice,
+            connectionStatus = uiState.connectionStatus,
+            connectionMessage = uiState.connectionMessage,
+            onConnectDevice = onConnectDevice,
+            onDisconnectDevice = onDisconnectDevice,
             modifier = Modifier.weight(1f),
         )
 
@@ -128,6 +136,11 @@ private fun ScanHeader(
 @Composable
 private fun DeviceList(
     devices: List<DiscoveredBleDevice>,
+    selectedDevice: DiscoveredBleDevice?,
+    connectionStatus: BleConnectionStatus,
+    connectionMessage: String,
+    onConnectDevice: (DiscoveredBleDevice) -> Unit,
+    onDisconnectDevice: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     if (devices.isEmpty()) {
@@ -147,6 +160,7 @@ private fun DeviceList(
             items = devices,
             key = { it.address },
         ) { device ->
+            val isSelected = selectedDevice?.address == device.address
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 tonalElevation = 1.dp,
@@ -169,6 +183,34 @@ private fun DeviceList(
                         text = "RSSI: ${device.rssi} dBm",
                         style = MaterialTheme.typography.bodyMedium,
                     )
+                    if (isSelected) {
+                        Text(
+                            text = "Connection: ${connectionStatus.name}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            text = connectionMessage,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Button(
+                            onClick = { onConnectDevice(device) },
+                            enabled = connectionStatus.canStartConnect(isSelected),
+                        ) {
+                            Text("Connect")
+                        }
+                        OutlinedButton(
+                            onClick = onDisconnectDevice,
+                            enabled = connectionStatus.canDisconnect(isSelected),
+                        ) {
+                            Text("Disconnect")
+                        }
+                    }
                 }
             }
         }
@@ -232,10 +274,36 @@ private fun BleScanScreenPreview() {
                     ),
                 ),
                 message = "Scanning for BLE devices.",
+                selectedDevice = DiscoveredBleDevice(
+                    name = "TV BLE",
+                    address = "00:11:22:33:44:55",
+                    rssi = -61,
+                    lastSeenMillis = 0L,
+                ),
+                connectionStatus = BleConnectionStatus.Connected,
+                connectionMessage = "Connected to TV BLE.",
             ),
             onStartScan = {},
             onStopScan = {},
+            onConnectDevice = {},
+            onDisconnectDevice = {},
             onRequestPermissions = {},
         )
     }
+}
+
+private fun BleConnectionStatus.canStartConnect(isSelected: Boolean): Boolean {
+    return when (this) {
+        BleConnectionStatus.Connecting,
+        BleConnectionStatus.Connected,
+        BleConnectionStatus.Disconnecting -> false
+
+        BleConnectionStatus.Disconnected,
+        BleConnectionStatus.Failed -> true
+    }
+}
+
+private fun BleConnectionStatus.canDisconnect(isSelected: Boolean): Boolean {
+    return isSelected &&
+        (this == BleConnectionStatus.Connecting || this == BleConnectionStatus.Connected)
 }

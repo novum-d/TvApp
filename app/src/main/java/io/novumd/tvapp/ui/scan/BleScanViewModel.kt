@@ -2,6 +2,9 @@ package io.novumd.tvapp.ui.scan
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
+import io.novumd.tvapp.ble.BleConnectionManager
+import io.novumd.tvapp.ble.BleConnectionStartResult
+import io.novumd.tvapp.ble.BleConnectionStatus
 import io.novumd.tvapp.ble.BleLogEntry
 import io.novumd.tvapp.ble.BleScanStartResult
 import io.novumd.tvapp.ble.BleScanner
@@ -15,6 +18,7 @@ import kotlinx.coroutines.flow.update
 
 class BleScanViewModel(application: Application) : AndroidViewModel(application) {
     private val scanner = BleScanner(application.applicationContext)
+    private val connectionManager = BleConnectionManager(application.applicationContext)
     private val _uiState = MutableStateFlow(BleScanUiState())
 
     val uiState: StateFlow<BleScanUiState> = _uiState.asStateFlow()
@@ -175,6 +179,119 @@ class BleScanViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun connect(device: DiscoveredBleDevice) {
+        if (uiState.value.status == BleScanStatus.Scanning) {
+            scanner.stopScan(::appendLog)
+            _uiState.update {
+                it.copy(
+                    status = BleScanStatus.Stopped,
+                    message = "Scan stopped before GATT connect.",
+                )
+            }
+        }
+
+        when (
+            val result = connectionManager.connect(
+                device = device,
+                onStateChanged = ::onConnectionStateChanged,
+                onLog = ::appendLog,
+            )
+        ) {
+            BleConnectionStartResult.Started -> {
+                _uiState.update {
+                    it.copy(
+                        selectedDevice = device,
+                        connectionStatus = BleConnectionStatus.Connecting,
+                        connectionMessage = "Connecting to ${device.name}.",
+                    )
+                }
+            }
+
+            BleConnectionStartResult.BluetoothOff -> {
+                _uiState.update {
+                    it.copy(
+                        selectedDevice = device,
+                        connectionStatus = BleConnectionStatus.Failed,
+                        connectionMessage = "Bluetooth is off.",
+                    )
+                }
+                appendLog(
+                    connectionScreenLog(
+                        gattStatus = "bluetoothOff",
+                        connectionState = "blocked",
+                        targetDevice = device.address,
+                        message = "GATT connect blocked because Bluetooth is off",
+                    ),
+                )
+            }
+
+            is BleConnectionStartResult.ConnectionActive -> {
+                appendLog(
+                    connectionScreenLog(
+                        gattStatus = "connectionActive",
+                        connectionState = result.status.name,
+                        targetDevice = device.address,
+                        message = "GATT connect ignored because a connection is active",
+                    ),
+                )
+            }
+
+            BleConnectionStartResult.InvalidAddress -> {
+                _uiState.update {
+                    it.copy(
+                        selectedDevice = device,
+                        connectionStatus = BleConnectionStatus.Failed,
+                        connectionMessage = "Invalid BLE address.",
+                    )
+                }
+                appendLog(
+                    connectionScreenLog(
+                        gattStatus = "invalidAddress",
+                        connectionState = "failed",
+                        targetDevice = device.address,
+                        message = "Invalid BLE device address",
+                    ),
+                )
+            }
+
+            is BleConnectionStartResult.PermissionMissing -> {
+                _uiState.update {
+                    it.copy(
+                        selectedDevice = device,
+                        connectionStatus = BleConnectionStatus.Failed,
+                        connectionMessage = "BLE connect permission is required.",
+                        missingPermissions = result.missingPermissions,
+                    )
+                }
+                appendLog(
+                    connectionScreenLog(
+                        gattStatus = "permissionDenied",
+                        connectionState = "blocked",
+                        targetDevice = device.address,
+                        message = "GATT connect blocked by missing permission",
+                    ),
+                )
+            }
+
+            is BleConnectionStartResult.Error -> {
+                _uiState.update {
+                    it.copy(
+                        selectedDevice = device,
+                        connectionStatus = BleConnectionStatus.Failed,
+                        connectionMessage = result.message,
+                    )
+                }
+            }
+        }
+    }
+
+    fun disconnect() {
+        connectionManager.disconnect(
+            onStateChanged = ::onConnectionStateChanged,
+            onLog = ::appendLog,
+        )
+    }
+
     fun onPermissionResult() {
         refreshEnvironmentState()
         appendLog(
@@ -188,6 +305,7 @@ class BleScanViewModel(application: Application) : AndroidViewModel(application)
 
     override fun onCleared() {
         scanner.stopScan(::appendLog)
+        connectionManager.close(::appendLog)
         super.onCleared()
     }
 
@@ -212,22 +330,59 @@ class BleScanViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private fun scanScreenLog(
-        callbackName: String = "BleScanViewModel",
-        gattStatus: String = "N/A",
-        connectionState: String,
+    private fun onConnectionStateChanged(
+        status: BleConnectionStatus,
         message: String,
-    ): BleLogEntry {
-        return BleLogEntry(
-            timestampMillis = System.currentTimeMillis(),
-            threadName = Thread.currentThread().name,
-            callbackName = callbackName,
-            gattStatus = gattStatus,
-            connectionState = connectionState,
-            operationType = "scan",
-            targetDevice = "none",
-            characteristicUuid = "N/A",
-            message = message,
-        )
+    ) {
+        _uiState.update {
+            it.copy(
+                connectionStatus = status,
+                connectionMessage = message,
+                selectedDevice = if (status == BleConnectionStatus.Disconnected) {
+                    null
+                } else {
+                    it.selectedDevice
+                },
+            )
+        }
     }
+}
+
+private fun scanScreenLog(
+    callbackName: String = "BleScanViewModel",
+    gattStatus: String = "N/A",
+    connectionState: String,
+    message: String,
+): BleLogEntry {
+    return BleLogEntry(
+        timestampMillis = System.currentTimeMillis(),
+        threadName = Thread.currentThread().name,
+        callbackName = callbackName,
+        gattStatus = gattStatus,
+        connectionState = connectionState,
+        operationType = "scan",
+        targetDevice = "none",
+        characteristicUuid = "N/A",
+        message = message,
+    )
+}
+
+private fun connectionScreenLog(
+    callbackName: String = "BleScanViewModel",
+    gattStatus: String,
+    connectionState: String,
+    targetDevice: String,
+    message: String,
+): BleLogEntry {
+    return BleLogEntry(
+        timestampMillis = System.currentTimeMillis(),
+        threadName = Thread.currentThread().name,
+        callbackName = callbackName,
+        gattStatus = gattStatus,
+        connectionState = connectionState,
+        operationType = "connect",
+        targetDevice = targetDevice,
+        characteristicUuid = "N/A",
+        message = message,
+    )
 }

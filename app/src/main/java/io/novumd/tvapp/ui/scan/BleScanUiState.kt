@@ -1,5 +1,6 @@
 package io.novumd.tvapp.ui.scan
 
+import io.novumd.tvapp.ble.BleConnectionStatus
 import io.novumd.tvapp.ble.BleLogEntry
 import io.novumd.tvapp.ble.DiscoveredBleDevice
 
@@ -11,6 +12,9 @@ data class BleScanUiState(
     val logs: List<BleLogEntry> = emptyList(),
     val missingPermissions: List<String> = emptyList(),
     val message: String = "Scan is stopped.",
+    val selectedDevice: DiscoveredBleDevice? = null,
+    val connectionStatus: BleConnectionStatus = BleConnectionStatus.Disconnected,
+    val connectionMessage: String = "No active GATT connection.",
 )
 
 enum class BleScanStatus {
