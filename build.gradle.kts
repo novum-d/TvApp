@@ -25,6 +25,11 @@ tasks.register("installPreCommitHook") {
     }
 }
 
+tasks.register("ktlintCheck") {
+    group = "verification"
+    description = "Compatibility task for existing workflow and documentation; delegates to detekt formatting checks."
+}
+
 val libsCatalog = extensions.getByType<VersionCatalogsExtension>().named("libs")
 
 subprojects {
@@ -84,7 +89,7 @@ subprojects {
         }
     }
 
-    tasks.register<Detekt>("detektFormatCheck") {
+    val detektFormatCheck = tasks.register<Detekt>("detektFormatCheck") {
         group = "verification"
         description = "Checks Kotlin formatting with detekt formatting rules without modifying files."
         autoCorrect = false
@@ -106,5 +111,9 @@ subprojects {
             sarif.required.set(false)
             md.required.set(false)
         }
+    }
+
+    rootProject.tasks.named("ktlintCheck") {
+        dependsOn(detektFormatCheck)
     }
 }
