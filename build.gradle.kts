@@ -30,6 +30,12 @@ tasks.register("ktlintCheck") {
     description = "Compatibility task for existing workflow and documentation; delegates to detekt formatting checks."
 }
 
+tasks.register("check") {
+    group = "verification"
+    description = "Runs root verification checks."
+    dependsOn("ktlintCheck")
+}
+
 val libsCatalog = extensions.getByType<VersionCatalogsExtension>().named("libs")
 
 subprojects {
