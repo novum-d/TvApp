@@ -39,6 +39,7 @@ complexity:
     ignoreDefaultParameters: true
   TooManyFunctions:
     active: true
+    thresholdInClasses: 15
     ignoreAnnotatedFunctions: ["Preview"]
   LongMethod:
     active: true
