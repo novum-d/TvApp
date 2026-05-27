@@ -21,6 +21,13 @@ class BleScanUiStateTest {
     }
 
     @Test
+    fun clearVisibleLogs_returnsEmptyLogList() {
+        val logs = clearVisibleLogs()
+
+        assertEquals(emptyList<BleLogEntry>(), logs)
+    }
+
+    @Test
     fun filterDevicesByName_matchesDeviceNameIgnoringCase() {
         val devices = listOf(
             discoveredDevice(name = "Living Room TV", address = "00:11:22:33:44:55"),
