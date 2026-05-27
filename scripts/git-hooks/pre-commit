@@ -30,6 +30,17 @@ fi
 
 cd "$REPO_ROOT"
 
+TEMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TEMP_DIR"' EXIT
+
+BEFORE_FORMAT_DIFF="$TEMP_DIR/before-format.diff"
+AFTER_FORMAT_DIFF="$TEMP_DIR/after-format.diff"
+
+# 既存の unstaged 差分を保存しておく。
+# staged と unstaged の両方に差分があるファイル(MM)でも、
+# detektFormat が新しく変更しない限りコミットを許可する。
+git --no-pager diff --binary -- $KOTLIN_INPUT > "$BEFORE_FORMAT_DIFF"
+
 OUTPUT=$(./gradlew detektFormat detekt 2>&1) || {
   echo "***********************************************"
   echo "                 detekt failed                 "
@@ -41,7 +52,9 @@ OUTPUT=$(./gradlew detektFormat detekt 2>&1) || {
 
 echo "$OUTPUT"
 
-if ! git diff --quiet -- $KOTLIN_INPUT; then
+git --no-pager diff --binary -- $KOTLIN_INPUT > "$AFTER_FORMAT_DIFF"
+
+if ! cmp -s "$BEFORE_FORMAT_DIFF" "$AFTER_FORMAT_DIFF"; then
   echo "***********************************************"
   echo "          detekt formatting changed files      "
   echo " Please review and stage formatted files first "
