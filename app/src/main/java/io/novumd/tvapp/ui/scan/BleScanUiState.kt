@@ -9,6 +9,7 @@ private const val MAX_VISIBLE_LOG_ENTRIES = 200
 data class BleScanUiState(
     val status: BleScanStatus = BleScanStatus.Stopped,
     val devices: List<DiscoveredBleDevice> = emptyList(),
+    val deviceNameFilterQuery: String = "",
     val logs: List<BleLogEntry> = emptyList(),
     val missingPermissions: List<String> = emptyList(),
     val message: String = "Scan is stopped.",
@@ -29,3 +30,17 @@ fun appendVisibleLog(
     logs: List<BleLogEntry>,
     entry: BleLogEntry,
 ): List<BleLogEntry> = listOf(entry).plus(logs).take(MAX_VISIBLE_LOG_ENTRIES)
+
+fun filterDevicesByName(
+    devices: List<DiscoveredBleDevice>,
+    query: String,
+): List<DiscoveredBleDevice> {
+    val normalizedQuery = query.trim()
+    if (normalizedQuery.isEmpty()) {
+        return devices
+    }
+
+    return devices.filter { device ->
+        device.name.contains(normalizedQuery, ignoreCase = true)
+    }
+}

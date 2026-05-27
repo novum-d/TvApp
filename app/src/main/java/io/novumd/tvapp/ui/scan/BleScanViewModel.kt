@@ -65,14 +65,12 @@ class BleScanViewModel(application: Application) : AndroidViewModel(application)
                 }
             }
 
-            uiState.value.status != BleScanStatus.Scanning -> {
-                _uiState.update {
-                    it.copy(
-                        status = BleScanStatus.Stopped,
-                        missingPermissions = emptyList(),
-                        message = "Ready to scan.",
-                    )
-                }
+            uiState.value.status != BleScanStatus.Scanning -> _uiState.update {
+                it.copy(
+                    status = BleScanStatus.Stopped,
+                    missingPermissions = emptyList(),
+                    message = "Ready to scan.",
+                )
             }
         }
     }
@@ -179,6 +177,12 @@ class BleScanViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun updateDeviceNameFilter(query: String) {
+        _uiState.update {
+            it.copy(deviceNameFilterQuery = query)
+        }
+    }
+
     fun connect(device: DiscoveredBleDevice) {
         if (uiState.value.status == BleScanStatus.Scanning) {
             scanner.stopScan(::appendLog)
@@ -197,14 +201,12 @@ class BleScanViewModel(application: Application) : AndroidViewModel(application)
                 onLog = ::appendLog,
             )
         ) {
-            BleConnectionStartResult.Started -> {
-                _uiState.update {
-                    it.copy(
-                        selectedDevice = device,
-                        connectionStatus = BleConnectionStatus.Connecting,
-                        connectionMessage = "Connecting to ${device.name}.",
-                    )
-                }
+            BleConnectionStartResult.Started -> _uiState.update {
+                it.copy(
+                    selectedDevice = device,
+                    connectionStatus = BleConnectionStatus.Connecting,
+                    connectionMessage = "Connecting to ${device.name}.",
+                )
             }
 
             BleConnectionStartResult.BluetoothOff -> {
@@ -225,16 +227,14 @@ class BleScanViewModel(application: Application) : AndroidViewModel(application)
                 )
             }
 
-            is BleConnectionStartResult.ConnectionActive -> {
-                appendLog(
-                    connectionScreenLog(
-                        gattStatus = "connectionActive",
-                        connectionState = result.status.name,
-                        targetDevice = device.address,
-                        message = "GATT connect ignored because a connection is active",
-                    ),
-                )
-            }
+            is BleConnectionStartResult.ConnectionActive -> appendLog(
+                connectionScreenLog(
+                    gattStatus = "connectionActive",
+                    connectionState = result.status.name,
+                    targetDevice = device.address,
+                    message = "GATT connect ignored because a connection is active",
+                ),
+            )
 
             BleConnectionStartResult.InvalidAddress -> {
                 _uiState.update {
@@ -273,14 +273,12 @@ class BleScanViewModel(application: Application) : AndroidViewModel(application)
                 )
             }
 
-            is BleConnectionStartResult.Error -> {
-                _uiState.update {
-                    it.copy(
-                        selectedDevice = device,
-                        connectionStatus = BleConnectionStatus.Failed,
-                        connectionMessage = result.message,
-                    )
-                }
+            is BleConnectionStartResult.Error -> _uiState.update {
+                it.copy(
+                    selectedDevice = device,
+                    connectionStatus = BleConnectionStatus.Failed,
+                    connectionMessage = result.message,
+                )
             }
         }
     }

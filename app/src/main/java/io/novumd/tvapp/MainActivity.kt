@@ -59,6 +59,7 @@ class MainActivity : ComponentActivity() {
                         onStopScan = viewModel::stopScan,
                         onConnectDevice = viewModel::connect,
                         onDisconnectDevice = viewModel::disconnect,
+                        onDeviceNameFilterChange = viewModel::updateDeviceNameFilter,
                         onRequestPermissions = {
                             permissionLauncher.launch(requiredBleScanPermissions())
                         },
