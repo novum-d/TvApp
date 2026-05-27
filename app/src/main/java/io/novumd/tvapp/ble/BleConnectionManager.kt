@@ -367,6 +367,18 @@ class BleConnectionManager(
                     message = "GATT resource closed",
                 ),
             )
+        } catch (exception: SecurityException) {
+            onLog(
+                connectionLog(
+                    timestampMillis = now(),
+                    callbackName = "BluetoothGatt.close",
+                    gattStatus = "permissionDenied",
+                    connectionState = "error",
+                    operationType = "disconnect",
+                    targetDevice = activeDevice?.address ?: "unknown",
+                    message = exception.message ?: "Missing permission while closing GATT resource",
+                ),
+            )
         } catch (exception: RuntimeException) {
             onLog(
                 connectionLog(
