@@ -12,6 +12,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -21,6 +22,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import io.novumd.tvapp.ble.BleConnectionStatus
 import io.novumd.tvapp.ble.BleLogEntry
 import io.novumd.tvapp.ble.DiscoveredBleDevice
 import io.novumd.tvapp.ble.formatForDisplay
@@ -31,9 +33,17 @@ fun BleScanScreen(
     uiState: BleScanUiState,
     onStartScan: () -> Unit,
     onStopScan: () -> Unit,
+    onConnectDevice: (DiscoveredBleDevice) -> Unit,
+    onDisconnectDevice: () -> Unit,
+    onDeviceNameFilterChange: (String) -> Unit,
     onRequestPermissions: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val filteredDevices = filterDevicesByName(
+        devices = uiState.devices,
+        query = uiState.deviceNameFilterQuery,
+    )
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -50,12 +60,28 @@ fun BleScanScreen(
         HorizontalDivider()
 
         Text(
-            text = "Detected Devices (${uiState.devices.size})",
+            text = "Detected Devices (${filteredDevices.size}/${uiState.devices.size})",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold,
         )
+        OutlinedTextField(
+            value = uiState.deviceNameFilterQuery,
+            onValueChange = onDeviceNameFilterChange,
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = {
+                Text("Filter by device name")
+            },
+        )
         DeviceList(
-            devices = uiState.devices,
+            devices = filteredDevices,
+            hasAnyDevices = uiState.devices.isNotEmpty(),
+            filterQuery = uiState.deviceNameFilterQuery,
+            selectedDevice = uiState.selectedDevice,
+            connectionStatus = uiState.connectionStatus,
+            connectionMessage = uiState.connectionMessage,
+            onConnectDevice = onConnectDevice,
+            onDisconnectDevice = onDisconnectDevice,
             modifier = Modifier.weight(1f),
         )
 
@@ -128,11 +154,22 @@ private fun ScanHeader(
 @Composable
 private fun DeviceList(
     devices: List<DiscoveredBleDevice>,
+    hasAnyDevices: Boolean,
+    filterQuery: String,
+    selectedDevice: DiscoveredBleDevice?,
+    connectionStatus: BleConnectionStatus,
+    connectionMessage: String,
+    onConnectDevice: (DiscoveredBleDevice) -> Unit,
+    onDisconnectDevice: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     if (devices.isEmpty()) {
         Text(
-            text = "No BLE devices detected.",
+            text = if (hasAnyDevices && filterQuery.isNotBlank()) {
+                "No devices match the name filter."
+            } else {
+                "No BLE devices detected."
+            },
             modifier = modifier,
             style = MaterialTheme.typography.bodyMedium,
         )
@@ -147,6 +184,7 @@ private fun DeviceList(
             items = devices,
             key = { it.address },
         ) { device ->
+            val isSelected = selectedDevice?.address == device.address
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 tonalElevation = 1.dp,
@@ -169,6 +207,34 @@ private fun DeviceList(
                         text = "RSSI: ${device.rssi} dBm",
                         style = MaterialTheme.typography.bodyMedium,
                     )
+                    if (isSelected) {
+                        Text(
+                            text = "Connection: ${connectionStatus.name}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            text = connectionMessage,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Button(
+                            onClick = { onConnectDevice(device) },
+                            enabled = connectionStatus.canStartConnect(),
+                        ) {
+                            Text("Connect")
+                        }
+                        OutlinedButton(
+                            onClick = onDisconnectDevice,
+                            enabled = connectionStatus.canDisconnect(isSelected),
+                        ) {
+                            Text("Disconnect")
+                        }
+                    }
                 }
             }
         }
@@ -232,10 +298,39 @@ private fun BleScanScreenPreview() {
                     ),
                 ),
                 message = "Scanning for BLE devices.",
+                selectedDevice = DiscoveredBleDevice(
+                    name = "TV BLE",
+                    address = "00:11:22:33:44:55",
+                    rssi = -61,
+                    lastSeenMillis = 0L,
+                ),
+                connectionStatus = BleConnectionStatus.Connected,
+                connectionMessage = "Connected to TV BLE.",
             ),
             onStartScan = {},
             onStopScan = {},
+            onConnectDevice = {},
+            onDisconnectDevice = {},
+            onDeviceNameFilterChange = {},
             onRequestPermissions = {},
         )
     }
+}
+
+private fun BleConnectionStatus.canStartConnect(): Boolean {
+    return when (this) {
+        BleConnectionStatus.Connecting,
+        BleConnectionStatus.Connected,
+        BleConnectionStatus.Disconnecting,
+        -> false
+
+        BleConnectionStatus.Disconnected,
+        BleConnectionStatus.Failed,
+        -> true
+    }
+}
+
+private fun BleConnectionStatus.canDisconnect(isSelected: Boolean): Boolean {
+    return isSelected &&
+        (this == BleConnectionStatus.Connecting || this == BleConnectionStatus.Connected)
 }

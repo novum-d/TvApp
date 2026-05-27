@@ -22,3 +22,17 @@ fun Context.missingBleScanPermissions(): List<String> {
         ContextCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED
     }
 }
+
+fun requiredBleConnectPermissions(): Array<String> {
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        arrayOf(Manifest.permission.BLUETOOTH_CONNECT)
+    } else {
+        emptyArray()
+    }
+}
+
+fun Context.missingBleConnectPermissions(): List<String> {
+    return requiredBleConnectPermissions().filter { permission ->
+        ContextCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED
+    }
+}
