@@ -36,6 +36,7 @@ fun BleScanScreen(
     onConnectDevice: (DiscoveredBleDevice) -> Unit,
     onDisconnectDevice: () -> Unit,
     onDeviceNameFilterChange: (String) -> Unit,
+    onClearLogs: () -> Unit,
     onRequestPermissions: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -87,10 +88,9 @@ fun BleScanScreen(
 
         HorizontalDivider()
 
-        Text(
-            text = "BLE Event Log",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
+        LogHeader(
+            hasLogs = uiState.logs.isNotEmpty(),
+            onClearLogs = onClearLogs,
         )
         LogList(
             logs = uiState.logs,
@@ -242,13 +242,37 @@ private fun DeviceList(
 }
 
 @Composable
+private fun LogHeader(
+    hasLogs: Boolean,
+    onClearLogs: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "BLE Event Log",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+        OutlinedButton(
+            onClick = onClearLogs,
+            enabled = hasLogs,
+        ) {
+            Text("Clear Logs")
+        }
+    }
+}
+
+@Composable
 private fun LogList(
     logs: List<BleLogEntry>,
     modifier: Modifier = Modifier,
 ) {
     if (logs.isEmpty()) {
         Text(
-            text = "No scan events logged.",
+            text = "No BLE events logged.",
             modifier = modifier,
             style = MaterialTheme.typography.bodyMedium,
         )
@@ -312,6 +336,7 @@ private fun BleScanScreenPreview() {
             onConnectDevice = {},
             onDisconnectDevice = {},
             onDeviceNameFilterChange = {},
+            onClearLogs = {},
             onRequestPermissions = {},
         )
     }
