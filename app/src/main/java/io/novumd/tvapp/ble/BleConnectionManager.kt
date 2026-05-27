@@ -175,67 +175,65 @@ class BleConnectionManager(
     private fun connectionCallback(
         onStateChanged: (BleConnectionStatus, String) -> Unit,
         onLog: (BleLogEntry) -> Unit,
-    ): BluetoothGattCallback {
-        return object : BluetoothGattCallback() {
-            override fun onConnectionStateChange(
-                gatt: BluetoothGatt,
-                gattStatus: Int,
-                newState: Int,
-            ) {
-                val deviceAddress = activeDevice?.address ?: gatt.device.address
-                val newStateName = newState.connectionStateName()
-                onLog(
-                    connectionLog(
-                        timestampMillis = now(),
-                        callbackName = "BluetoothGattCallback.onConnectionStateChange",
-                        gattStatus = gattStatus.toString(),
-                        connectionState = newStateName,
-                        operationType = connectionOperationType(status, newState),
-                        targetDevice = deviceAddress,
-                        message = "newState=$newStateName",
-                    ),
-                )
+    ): BluetoothGattCallback = object : BluetoothGattCallback() {
+        override fun onConnectionStateChange(
+            gatt: BluetoothGatt,
+            gattStatus: Int,
+            newState: Int,
+        ) {
+            val deviceAddress = activeDevice?.address ?: gatt.device.address
+            val newStateName = newState.connectionStateName()
+            onLog(
+                connectionLog(
+                    timestampMillis = now(),
+                    callbackName = "BluetoothGattCallback.onConnectionStateChange",
+                    gattStatus = gattStatus.toString(),
+                    connectionState = newStateName,
+                    operationType = connectionOperationType(status, newState),
+                    targetDevice = deviceAddress,
+                    message = "newState=$newStateName",
+                ),
+            )
 
-                when {
-                    gattStatus == BluetoothGatt.GATT_SUCCESS &&
-                        newState == BluetoothProfile.STATE_CONNECTED -> {
-                        cancelTimeouts()
-                        updateStatus(
-                            status = BleConnectionStatus.Connected,
-                            message = "Connected to ${activeDevice?.name ?: deviceAddress}.",
-                            onStateChanged = onStateChanged,
-                        )
-                    }
+            when {
+                gattStatus == BluetoothGatt.GATT_SUCCESS &&
+                    newState == BluetoothProfile.STATE_CONNECTED -> {
+                    cancelTimeouts()
+                    updateStatus(
+                        status = BleConnectionStatus.Connected,
+                        message = "Connected to ${activeDevice?.name ?: deviceAddress}.",
+                        onStateChanged = onStateChanged,
+                    )
+                }
 
-                    newState == BluetoothProfile.STATE_DISCONNECTED -> {
-                        cancelTimeouts()
-                        val nextStatus = if (gattStatus == BluetoothGatt.GATT_SUCCESS) {
-                            BleConnectionStatus.Disconnected
-                        } else {
-                            BleConnectionStatus.Failed
-                        }
-                        val message = if (nextStatus == BleConnectionStatus.Disconnected) {
-                            "Disconnected from ${activeDevice?.name ?: deviceAddress}."
-                        } else {
-                            "GATT disconnected with status $gattStatus."
-                        }
-                        closeGatt(gatt, onLog, "closedAfterDisconnect")
-                        updateStatus(
-                            status = nextStatus,
-                            message = message,
-                            onStateChanged = onStateChanged,
-                        )
+                newState == BluetoothProfile.STATE_DISCONNECTED -> {
+                    cancelTimeouts()
+                    val nextStatus = if (gattStatus == BluetoothGatt.GATT_SUCCESS) {
+                        BleConnectionStatus.Disconnected
+                    } else {
+                        BleConnectionStatus.Failed
                     }
+                    val message = if (nextStatus == BleConnectionStatus.Disconnected) {
+                        "Disconnected from ${activeDevice?.name ?: deviceAddress}."
+                    } else {
+                        "GATT disconnected with status $gattStatus."
+                    }
+                    closeGatt(gatt, onLog, "closedAfterDisconnect")
+                    updateStatus(
+                        status = nextStatus,
+                        message = message,
+                        onStateChanged = onStateChanged,
+                    )
+                }
 
-                    gattStatus != BluetoothGatt.GATT_SUCCESS -> {
-                        cancelTimeouts()
-                        closeGatt(gatt, onLog, "closedAfterGattError")
-                        updateStatus(
-                            status = BleConnectionStatus.Failed,
-                            message = "GATT callback failed with status $gattStatus.",
-                            onStateChanged = onStateChanged,
-                        )
-                    }
+                gattStatus != BluetoothGatt.GATT_SUCCESS -> {
+                    cancelTimeouts()
+                    closeGatt(gatt, onLog, "closedAfterGattError")
+                    updateStatus(
+                        status = BleConnectionStatus.Failed,
+                        message = "GATT callback failed with status $gattStatus.",
+                        onStateChanged = onStateChanged,
+                    )
                 }
             }
         }
