@@ -183,6 +183,12 @@ class BleScanViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun clearLogs() {
+        _uiState.update {
+            it.copy(logs = clearVisibleLogs())
+        }
+    }
+
     fun connect(device: DiscoveredBleDevice) {
         if (uiState.value.status == BleScanStatus.Scanning) {
             scanner.stopScan(::appendLog)

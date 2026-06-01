@@ -31,6 +31,8 @@ fun appendVisibleLog(
     entry: BleLogEntry,
 ): List<BleLogEntry> = listOf(entry).plus(logs).take(MAX_VISIBLE_LOG_ENTRIES)
 
+fun clearVisibleLogs(): List<BleLogEntry> = emptyList()
+
 fun filterDevicesByName(
     devices: List<DiscoveredBleDevice>,
     query: String,
