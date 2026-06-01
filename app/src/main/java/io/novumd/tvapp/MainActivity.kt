@@ -59,6 +59,8 @@ class MainActivity : ComponentActivity() {
                         onStopScan = viewModel::stopScan,
                         onConnectDevice = viewModel::connect,
                         onDisconnectDevice = viewModel::disconnect,
+                        onSubscribe = viewModel::subscribe,
+                        onUnsubscribe = viewModel::unsubscribe,
                         onDeviceNameFilterChange = viewModel::updateDeviceNameFilter,
                         onClearLogs = viewModel::clearLogs,
                         onRequestPermissions = {

@@ -3,16 +3,25 @@ package io.novumd.tvapp.ble
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
+import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import java.util.UUID
 
 private const val CONNECT_TIMEOUT_MILLIS = 15_000L
 private const val DISCONNECT_TIMEOUT_MILLIS = 5_000L
 private const val SERVICE_DISCOVERY_TIMEOUT_MILLIS = 10_000L
+private const val SUBSCRIPTION_TIMEOUT_MILLIS = 10_000L
+private val CLIENT_CHARACTERISTIC_CONFIG_UUID: UUID =
+    UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
+@Suppress("DEPRECATION", "LongMethod", "ReturnCount", "TooManyFunctions")
 class BleConnectionManager(
     private val context: Context,
     private val now: () -> Long = { System.currentTimeMillis() },
@@ -26,12 +35,17 @@ class BleConnectionManager(
     private var connectTimeout: Runnable? = null
     private var disconnectTimeout: Runnable? = null
     private var serviceDiscoveryTimeout: Runnable? = null
+    private var subscriptionTimeout: Runnable? = null
+    private var pendingSubscription: PendingSubscription? = null
+    private var activeSubscription: BleCharacteristicSubscription? = null
 
     @SuppressLint("MissingPermission")
     fun connect(
         device: DiscoveredBleDevice,
         onStateChanged: (BleConnectionStatus, String) -> Unit,
         onServicesChanged: (BleServiceDiscoveryStatus, List<BleGattService>, String) -> Unit,
+        onSubscriptionChanged: (BleSubscriptionStatus, BleCharacteristicSubscription?, String) -> Unit,
+        onNotificationReceived: (BleNotificationEvent) -> Unit,
         onLog: (BleLogEntry) -> Unit,
     ): BleConnectionStartResult {
         val missingPermissions = context.missingBleConnectPermissions()
@@ -75,7 +89,13 @@ class BleConnectionManager(
             ),
         )
 
-        val callback = connectionCallback(onStateChanged, onServicesChanged, onLog)
+        val callback = connectionCallback(
+            onStateChanged,
+            onServicesChanged,
+            onSubscriptionChanged,
+            onNotificationReceived,
+            onLog,
+        )
         return try {
             bluetoothGatt = bluetoothDevice.connectGatt(
                 context,
@@ -105,10 +125,137 @@ class BleConnectionManager(
     }
 
     @SuppressLint("MissingPermission")
+    fun subscribeToCharacteristic(
+        subscription: BleCharacteristicSubscription,
+        onSubscriptionChanged: (BleSubscriptionStatus, BleCharacteristicSubscription?, String) -> Unit,
+        onLog: (BleLogEntry) -> Unit,
+    ): BleSubscriptionStartResult {
+        val missingPermissions = context.missingBleConnectPermissions()
+        if (missingPermissions.isNotEmpty()) {
+            return BleSubscriptionStartResult.PermissionMissing(missingPermissions)
+        }
+
+        if (pendingSubscription != null) {
+            return BleSubscriptionStartResult.OperationActive
+        }
+
+        val gatt = bluetoothGatt ?: return BleSubscriptionStartResult.NoActiveGatt
+        if (status != BleConnectionStatus.Connected) {
+            return BleSubscriptionStartResult.NotConnected(status)
+        }
+
+        val target = findGattTarget(gatt, subscription.serviceUuid, subscription.characteristicUuid)
+            ?: return BleSubscriptionStartResult.CharacteristicUnavailable
+        if (!target.characteristic.supports(subscription.mode)) {
+            return BleSubscriptionStartResult.UnsupportedProperty
+        }
+
+        val descriptor = target.characteristic.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG_UUID)
+            ?: return BleSubscriptionStartResult.CccdUnavailable
+
+        val pending = PendingSubscription(
+            subscription = subscription,
+            enable = true,
+            characteristic = target.characteristic,
+            descriptor = descriptor,
+        )
+        pendingSubscription = pending
+        onSubscriptionChanged(
+            BleSubscriptionStatus.Subscribing,
+            subscription,
+            "Subscribing ${subscription.mode.name.lowercase()} for ${subscription.characteristicUuid}.",
+        )
+        onLog(
+            connectionLog(
+                timestampMillis = now(),
+                callbackName = "BluetoothGatt.setCharacteristicNotification",
+                connectionState = status.name,
+                operationType = "subscribe",
+                targetDevice = activeDevice?.address ?: gatt.device.address,
+                characteristicUuid = subscription.characteristicUuid,
+                message = "enable local notification requested mode=${subscription.mode.name}",
+            ),
+        )
+
+        return tryStartSubscriptionWrite(
+            gatt = gatt,
+            pending = pending,
+            descriptorValue = subscription.mode.enableDescriptorValue(),
+            startFailureStatus = BleSubscriptionStatus.Failed,
+            startFailureSubscription = null,
+            onSubscriptionChanged = onSubscriptionChanged,
+            onLog = onLog,
+        )
+    }
+
+    @SuppressLint("MissingPermission")
+    fun unsubscribeFromActiveCharacteristic(
+        onSubscriptionChanged: (BleSubscriptionStatus, BleCharacteristicSubscription?, String) -> Unit,
+        onLog: (BleLogEntry) -> Unit,
+    ): BleSubscriptionStartResult {
+        val missingPermissions = context.missingBleConnectPermissions()
+        if (missingPermissions.isNotEmpty()) {
+            return BleSubscriptionStartResult.PermissionMissing(missingPermissions)
+        }
+
+        if (pendingSubscription != null) {
+            return BleSubscriptionStartResult.OperationActive
+        }
+
+        val subscription = activeSubscription ?: return BleSubscriptionStartResult.NoActiveSubscription
+        val gatt = bluetoothGatt ?: return BleSubscriptionStartResult.NoActiveGatt
+        if (status != BleConnectionStatus.Connected) {
+            return BleSubscriptionStartResult.NotConnected(status)
+        }
+
+        val target = findGattTarget(gatt, subscription.serviceUuid, subscription.characteristicUuid)
+            ?: return BleSubscriptionStartResult.CharacteristicUnavailable
+        val descriptor = target.characteristic.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG_UUID)
+            ?: return BleSubscriptionStartResult.CccdUnavailable
+        val pending = PendingSubscription(
+            subscription = subscription,
+            enable = false,
+            characteristic = target.characteristic,
+            descriptor = descriptor,
+        )
+        pendingSubscription = pending
+        onSubscriptionChanged(
+            BleSubscriptionStatus.Unsubscribing,
+            subscription,
+            "Unsubscribing from ${subscription.characteristicUuid}.",
+        )
+
+        return tryStartSubscriptionWrite(
+            gatt = gatt,
+            pending = pending,
+            descriptorValue = BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE,
+            startFailureStatus = BleSubscriptionStatus.Failed,
+            startFailureSubscription = activeSubscription,
+            onSubscriptionChanged = onSubscriptionChanged,
+            onLog = onLog,
+        )
+    }
+
+    @SuppressLint("MissingPermission")
     fun disconnect(
         onStateChanged: (BleConnectionStatus, String) -> Unit,
         onLog: (BleLogEntry) -> Unit,
     ) {
+        if (pendingSubscription != null) {
+            onLog(
+                connectionLog(
+                    timestampMillis = now(),
+                    callbackName = "BleConnectionManager.disconnect",
+                    gattStatus = "operationActive",
+                    connectionState = status.name,
+                    operationType = "disconnect",
+                    targetDevice = activeDevice?.address ?: "unknown",
+                    message = "disconnect blocked because a subscription operation is active",
+                ),
+            )
+            return
+        }
+
         val gatt = bluetoothGatt
         val device = activeDevice
         if (gatt == null || device == null) {
@@ -178,6 +325,8 @@ class BleConnectionManager(
     private fun connectionCallback(
         onStateChanged: (BleConnectionStatus, String) -> Unit,
         onServicesChanged: (BleServiceDiscoveryStatus, List<BleGattService>, String) -> Unit,
+        onSubscriptionChanged: (BleSubscriptionStatus, BleCharacteristicSubscription?, String) -> Unit,
+        onNotificationReceived: (BleNotificationEvent) -> Unit,
         onLog: (BleLogEntry) -> Unit,
     ): BluetoothGattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(
@@ -229,6 +378,10 @@ class BleConnectionManager(
                         emptyList(),
                         "No discovered services.",
                     )
+                    clearSubscriptionState(
+                        onSubscriptionChanged = onSubscriptionChanged,
+                        message = "No active notification subscription.",
+                    )
                     updateStatus(
                         status = nextStatus,
                         message = message,
@@ -243,6 +396,10 @@ class BleConnectionManager(
                         BleServiceDiscoveryStatus.Failed,
                         emptyList(),
                         "GATT callback failed with status $gattStatus.",
+                    )
+                    clearSubscriptionState(
+                        onSubscriptionChanged = onSubscriptionChanged,
+                        message = "Notification subscription cleared after GATT failure.",
                     )
                     updateStatus(
                         status = BleConnectionStatus.Failed,
@@ -296,6 +453,116 @@ class BleConnectionManager(
                     "Service discovery failed with status $gattStatus.",
                 )
             }
+        }
+
+        override fun onDescriptorWrite(
+            gatt: BluetoothGatt,
+            descriptor: BluetoothGattDescriptor,
+            gattStatus: Int,
+        ) {
+            val pending = pendingSubscription
+            if (
+                pending == null ||
+                descriptor.uuid != CLIENT_CHARACTERISTIC_CONFIG_UUID ||
+                descriptor.characteristic.uuid.toString() != pending.subscription.characteristicUuid
+            ) {
+                onLog(
+                    connectionLog(
+                        timestampMillis = now(),
+                        callbackName = "BluetoothGattCallback.onDescriptorWrite",
+                        gattStatus = gattStatus.toString(),
+                        connectionState = status.name,
+                        operationType = "subscribe",
+                        targetDevice = activeDevice?.address ?: gatt.device.address,
+                        characteristicUuid = descriptor.characteristic.uuid.toString(),
+                        message = "ignored descriptor write callback",
+                    ),
+                )
+                return
+            }
+
+            subscriptionTimeout?.let(handler::removeCallbacks)
+            subscriptionTimeout = null
+            pendingSubscription = null
+
+            val success = gattStatus == BluetoothGatt.GATT_SUCCESS
+            val nextStatus = when {
+                success && pending.enable -> BleSubscriptionStatus.Subscribed
+                success -> BleSubscriptionStatus.Idle
+                else -> BleSubscriptionStatus.Failed
+            }
+            val nextSubscription = when {
+                success && pending.enable -> pending.subscription
+                success -> null
+                pending.enable -> null
+                else -> activeSubscription
+            }
+            if (success) {
+                activeSubscription = nextSubscription
+            } else if (pending.enable) {
+                setCharacteristicNotification(
+                    gatt = gatt,
+                    characteristic = pending.characteristic,
+                    enable = false,
+                    onLog = onLog,
+                )
+            }
+            val message = descriptorWriteMessage(pending, gattStatus)
+
+            onLog(
+                connectionLog(
+                    timestampMillis = now(),
+                    callbackName = "BluetoothGattCallback.onDescriptorWrite",
+                    gattStatus = gattStatus.toString(),
+                    connectionState = status.name,
+                    operationType = if (pending.enable) "subscribe" else "unsubscribe",
+                    targetDevice = activeDevice?.address ?: gatt.device.address,
+                    characteristicUuid = pending.subscription.characteristicUuid,
+                    message = message,
+                ),
+            )
+            onSubscriptionChanged(nextStatus, nextSubscription, message)
+        }
+
+        @Suppress("DEPRECATION")
+        override fun onCharacteristicChanged(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+        ) {
+            onCharacteristicChanged(gatt, characteristic, characteristic.value ?: byteArrayOf())
+        }
+
+        override fun onCharacteristicChanged(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            value: ByteArray,
+        ) {
+            val timestampMillis = now()
+            val serviceUuid = characteristic.service?.uuid?.toString() ?: "unknown"
+            val characteristicUuid = characteristic.uuid.toString()
+            val targetDevice = activeDevice?.address ?: gatt.device.address
+            val valueHex = value.toDisplayHex()
+            onLog(
+                connectionLog(
+                    timestampMillis = timestampMillis,
+                    callbackName = "BluetoothGattCallback.onCharacteristicChanged",
+                    connectionState = status.name,
+                    operationType = "notification",
+                    targetDevice = targetDevice,
+                    characteristicUuid = characteristicUuid,
+                    message = "service=$serviceUuid bytes=${value.size} value=$valueHex",
+                ),
+            )
+            onNotificationReceived(
+                BleNotificationEvent(
+                    timestampMillis = timestampMillis,
+                    targetDevice = targetDevice,
+                    serviceUuid = serviceUuid,
+                    characteristicUuid = characteristicUuid,
+                    valueHex = valueHex,
+                    byteCount = value.size,
+                ),
+            )
         }
     }
 
@@ -391,6 +658,135 @@ class BleConnectionManager(
         }
         serviceDiscoveryTimeout = timeout
         handler.postDelayed(timeout, SERVICE_DISCOVERY_TIMEOUT_MILLIS)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun tryStartSubscriptionWrite(
+        gatt: BluetoothGatt,
+        pending: PendingSubscription,
+        descriptorValue: ByteArray,
+        startFailureStatus: BleSubscriptionStatus,
+        startFailureSubscription: BleCharacteristicSubscription?,
+        onSubscriptionChanged: (BleSubscriptionStatus, BleCharacteristicSubscription?, String) -> Unit,
+        onLog: (BleLogEntry) -> Unit,
+    ): BleSubscriptionStartResult {
+        val subscription = pending.subscription
+        val notificationStarted = setCharacteristicNotification(
+            gatt = gatt,
+            characteristic = pending.characteristic,
+            enable = pending.enable,
+            onLog = onLog,
+        )
+        if (!notificationStarted) {
+            pendingSubscription = null
+            onSubscriptionChanged(
+                startFailureStatus,
+                startFailureSubscription,
+                "setCharacteristicNotification returned false.",
+            )
+            return BleSubscriptionStartResult.LocalNotificationFailed
+        }
+
+        onLog(
+            connectionLog(
+                timestampMillis = now(),
+                callbackName = "BluetoothGatt.writeDescriptor",
+                connectionState = status.name,
+                operationType = if (pending.enable) "subscribe" else "unsubscribe",
+                targetDevice = activeDevice?.address ?: gatt.device.address,
+                characteristicUuid = subscription.characteristicUuid,
+                message = "CCCD write requested mode=${subscription.mode.name} enable=${pending.enable}",
+            ),
+        )
+
+        return try {
+            val started = writeDescriptor(gatt, pending.descriptor, descriptorValue)
+            if (started) {
+                scheduleSubscriptionTimeout(
+                    gatt = gatt,
+                    pending = pending,
+                    onSubscriptionChanged = onSubscriptionChanged,
+                    onLog = onLog,
+                )
+                BleSubscriptionStartResult.Started
+            } else {
+                pendingSubscription = null
+                if (pending.enable) {
+                    setCharacteristicNotification(
+                        gatt = gatt,
+                        characteristic = pending.characteristic,
+                        enable = false,
+                        onLog = onLog,
+                    )
+                }
+                onSubscriptionChanged(
+                    startFailureStatus,
+                    startFailureSubscription,
+                    "CCCD write could not be started.",
+                )
+                BleSubscriptionStartResult.DescriptorWriteNotStarted
+            }
+        } catch (exception: SecurityException) {
+            failSubscriptionStart(
+                gatt = gatt,
+                pending = pending,
+                gattStatus = "permissionDenied",
+                message = exception.message ?: "Missing permission while writing CCCD",
+                onSubscriptionChanged = onSubscriptionChanged,
+                onLog = onLog,
+            )
+            BleSubscriptionStartResult.PermissionMissing(context.missingBleConnectPermissions())
+        } catch (exception: RuntimeException) {
+            failSubscriptionStart(
+                gatt = gatt,
+                pending = pending,
+                gattStatus = "descriptorWriteError",
+                message = exception.message ?: "Unable to write CCCD",
+                onSubscriptionChanged = onSubscriptionChanged,
+                onLog = onLog,
+            )
+            BleSubscriptionStartResult.Error(exception.message ?: "Unable to write CCCD")
+        }
+    }
+
+    private fun scheduleSubscriptionTimeout(
+        gatt: BluetoothGatt,
+        pending: PendingSubscription,
+        onSubscriptionChanged: (BleSubscriptionStatus, BleCharacteristicSubscription?, String) -> Unit,
+        onLog: (BleLogEntry) -> Unit,
+    ) {
+        subscriptionTimeout?.let(handler::removeCallbacks)
+        subscriptionTimeout = null
+        val timeout = Runnable {
+            if (pendingSubscription == pending) {
+                pendingSubscription = null
+                if (pending.enable) {
+                    setCharacteristicNotification(
+                        gatt = gatt,
+                        characteristic = pending.characteristic,
+                        enable = false,
+                        onLog = onLog,
+                    )
+                }
+                val nextSubscription = if (pending.enable) null else activeSubscription
+                val message = "CCCD write timeout after ${SUBSCRIPTION_TIMEOUT_MILLIS}ms."
+                onLog(
+                    connectionLog(
+                        timestampMillis = now(),
+                        callbackName = "BleConnectionManager.subscriptionTimeout",
+                        gattStatus = "timeout",
+                        connectionState = status.name,
+                        operationType = if (pending.enable) "subscribe" else "unsubscribe",
+                        targetDevice = activeDevice?.address ?: gatt.device.address,
+                        characteristicUuid = pending.subscription.characteristicUuid,
+                        message = message,
+                    ),
+                )
+                onSubscriptionChanged(BleSubscriptionStatus.Failed, nextSubscription, message)
+            }
+        }
+        subscriptionTimeout = timeout
+        handler.postDelayed(timeout, SUBSCRIPTION_TIMEOUT_MILLIS)
     }
 
     private fun scheduleConnectTimeout(
@@ -501,6 +897,9 @@ class BleConnectionManager(
         disconnectTimeout = null
         serviceDiscoveryTimeout?.let(handler::removeCallbacks)
         serviceDiscoveryTimeout = null
+        subscriptionTimeout?.let(handler::removeCallbacks)
+        subscriptionTimeout = null
+        pendingSubscription = null
     }
 
     private fun closeGatt(
@@ -550,7 +949,55 @@ class BleConnectionManager(
                 bluetoothGatt = null
             }
             activeDevice = null
+            activeSubscription = null
         }
+    }
+
+    private fun clearSubscriptionState(
+        onSubscriptionChanged: (BleSubscriptionStatus, BleCharacteristicSubscription?, String) -> Unit,
+        message: String,
+    ) {
+        subscriptionTimeout?.let(handler::removeCallbacks)
+        subscriptionTimeout = null
+        pendingSubscription = null
+        activeSubscription = null
+        onSubscriptionChanged(BleSubscriptionStatus.Idle, null, message)
+    }
+
+    private fun failSubscriptionStart(
+        gatt: BluetoothGatt,
+        pending: PendingSubscription,
+        gattStatus: String,
+        message: String,
+        onSubscriptionChanged: (BleSubscriptionStatus, BleCharacteristicSubscription?, String) -> Unit,
+        onLog: (BleLogEntry) -> Unit,
+    ) {
+        pendingSubscription = null
+        if (pending.enable) {
+            setCharacteristicNotification(
+                gatt = gatt,
+                characteristic = pending.characteristic,
+                enable = false,
+                onLog = onLog,
+            )
+        }
+        onLog(
+            connectionLog(
+                timestampMillis = now(),
+                callbackName = "BluetoothGatt.writeDescriptor",
+                gattStatus = gattStatus,
+                connectionState = status.name,
+                operationType = if (pending.enable) "subscribe" else "unsubscribe",
+                targetDevice = activeDevice?.address ?: gatt.device.address,
+                characteristicUuid = pending.subscription.characteristicUuid,
+                message = message,
+            ),
+        )
+        onSubscriptionChanged(
+            BleSubscriptionStatus.Failed,
+            if (pending.enable) null else activeSubscription,
+            message,
+        )
     }
 }
 
@@ -569,6 +1016,14 @@ enum class BleServiceDiscoveryStatus {
     Failed,
 }
 
+enum class BleSubscriptionStatus {
+    Idle,
+    Subscribing,
+    Subscribed,
+    Unsubscribing,
+    Failed,
+}
+
 sealed interface BleConnectionStartResult {
     data object Started : BleConnectionStartResult
     data object BluetoothOff : BleConnectionStartResult
@@ -577,6 +1032,32 @@ sealed interface BleConnectionStartResult {
     data class PermissionMissing(val missingPermissions: List<String>) : BleConnectionStartResult
     data class Error(val message: String) : BleConnectionStartResult
 }
+
+sealed interface BleSubscriptionStartResult {
+    data object Started : BleSubscriptionStartResult
+    data object NoActiveGatt : BleSubscriptionStartResult
+    data object NoActiveSubscription : BleSubscriptionStartResult
+    data class NotConnected(val status: BleConnectionStatus) : BleSubscriptionStartResult
+    data object OperationActive : BleSubscriptionStartResult
+    data object CharacteristicUnavailable : BleSubscriptionStartResult
+    data object UnsupportedProperty : BleSubscriptionStartResult
+    data object CccdUnavailable : BleSubscriptionStartResult
+    data object LocalNotificationFailed : BleSubscriptionStartResult
+    data object DescriptorWriteNotStarted : BleSubscriptionStartResult
+    data class PermissionMissing(val missingPermissions: List<String>) : BleSubscriptionStartResult
+    data class Error(val message: String) : BleSubscriptionStartResult
+}
+
+private data class PendingSubscription(
+    val subscription: BleCharacteristicSubscription,
+    val enable: Boolean,
+    val characteristic: BluetoothGattCharacteristic,
+    val descriptor: BluetoothGattDescriptor,
+)
+
+private data class GattTarget(
+    val characteristic: BluetoothGattCharacteristic,
+)
 
 private fun Int.connectionStateName(): String {
     return when (this) {
@@ -609,6 +1090,7 @@ private fun connectionLog(
     connectionState: String,
     operationType: String,
     targetDevice: String,
+    characteristicUuid: String = "N/A",
     message: String,
 ): BleLogEntry {
     return BleLogEntry(
@@ -619,7 +1101,91 @@ private fun connectionLog(
         connectionState = connectionState,
         operationType = operationType,
         targetDevice = targetDevice,
-        characteristicUuid = "N/A",
+        characteristicUuid = characteristicUuid,
         message = message,
     )
+}
+
+private fun findGattTarget(
+    gatt: BluetoothGatt,
+    serviceUuidText: String,
+    characteristicUuidText: String,
+): GattTarget? {
+    val serviceUuid = parseUuid(serviceUuidText) ?: return null
+    val characteristicUuid = parseUuid(characteristicUuidText) ?: return null
+    val characteristic = gatt.getService(serviceUuid)?.getCharacteristic(characteristicUuid) ?: return null
+    return GattTarget(characteristic = characteristic)
+}
+
+private fun parseUuid(uuid: String): UUID? {
+    return try {
+        UUID.fromString(uuid)
+    } catch (_: IllegalArgumentException) {
+        null
+    }
+}
+
+private fun BluetoothGattCharacteristic.supports(mode: BleSubscriptionMode): Boolean {
+    return when (mode) {
+        BleSubscriptionMode.Notification -> properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0
+        BleSubscriptionMode.Indication -> properties and BluetoothGattCharacteristic.PROPERTY_INDICATE != 0
+    }
+}
+
+@Suppress("DEPRECATION")
+private fun BleSubscriptionMode.enableDescriptorValue(): ByteArray {
+    return when (this) {
+        BleSubscriptionMode.Notification -> BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+        BleSubscriptionMode.Indication -> BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
+    }
+}
+
+@SuppressLint("MissingPermission")
+private fun setCharacteristicNotification(
+    gatt: BluetoothGatt,
+    characteristic: BluetoothGattCharacteristic,
+    enable: Boolean,
+    onLog: (BleLogEntry) -> Unit,
+): Boolean {
+    val started = gatt.setCharacteristicNotification(characteristic, enable)
+    onLog(
+        connectionLog(
+            timestampMillis = System.currentTimeMillis(),
+            callbackName = "BluetoothGatt.setCharacteristicNotification",
+            gattStatus = started.toString(),
+            connectionState = "local",
+            operationType = if (enable) "subscribe" else "unsubscribe",
+            targetDevice = gatt.device.address,
+            characteristicUuid = characteristic.uuid.toString(),
+            message = "local notification enable=$enable",
+        ),
+    )
+    return started
+}
+
+@SuppressLint("MissingPermission")
+@Suppress("DEPRECATION")
+private fun writeDescriptor(
+    gatt: BluetoothGatt,
+    descriptor: BluetoothGattDescriptor,
+    value: ByteArray,
+): Boolean {
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        gatt.writeDescriptor(descriptor, value) == BluetoothStatusCodes.SUCCESS
+    } else {
+        descriptor.value = value
+        gatt.writeDescriptor(descriptor)
+    }
+}
+
+private fun descriptorWriteMessage(
+    pending: PendingSubscription,
+    gattStatus: Int,
+): String {
+    val direction = if (pending.enable) "subscribe" else "unsubscribe"
+    return if (gattStatus == BluetoothGatt.GATT_SUCCESS) {
+        "$direction CCCD write succeeded mode=${pending.subscription.mode.name}"
+    } else {
+        "$direction CCCD write failed mode=${pending.subscription.mode.name} status=$gattStatus"
+    }
 }

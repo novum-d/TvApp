@@ -23,4 +23,26 @@ class BleGattServiceTest {
 
         assertEquals(listOf("none"), labels)
     }
+
+    @Test
+    fun subscriptionModes_returnsNotifyAndIndicateModesWhenSupported() {
+        val characteristic = BleGattCharacteristicInfo(
+            uuid = "00002a19-0000-1000-8000-00805f9b34fb",
+            properties = BluetoothGattCharacteristic.PROPERTY_NOTIFY or
+                BluetoothGattCharacteristic.PROPERTY_INDICATE,
+        )
+
+        val modes = characteristic.subscriptionModes()
+
+        assertEquals(listOf(BleSubscriptionMode.Notification, BleSubscriptionMode.Indication), modes)
+    }
+
+    @Test
+    fun toDisplayHex_formatsBytesForLogs() {
+        val value = byteArrayOf(0x00, 0x0f, 0xff.toByte())
+
+        val hex = value.toDisplayHex()
+
+        assertEquals("00 0F FF", hex)
+    }
 }

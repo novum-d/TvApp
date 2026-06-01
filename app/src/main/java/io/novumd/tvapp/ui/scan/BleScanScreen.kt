@@ -24,15 +24,22 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import io.novumd.tvapp.ble.BleCharacteristicSubscription
 import io.novumd.tvapp.ble.BleConnectionStatus
 import io.novumd.tvapp.ble.BleGattCharacteristicInfo
 import io.novumd.tvapp.ble.BleGattService
 import io.novumd.tvapp.ble.BleLogEntry
 import io.novumd.tvapp.ble.BleServiceDiscoveryStatus
+import io.novumd.tvapp.ble.BleSubscriptionMode
+import io.novumd.tvapp.ble.BleSubscriptionStatus
 import io.novumd.tvapp.ble.DiscoveredBleDevice
 import io.novumd.tvapp.ble.formatForDisplay
 import io.novumd.tvapp.ble.propertyLabels
+import io.novumd.tvapp.ble.subscriptionModes
 import io.novumd.tvapp.ui.theme.TvAppTheme
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 private val DeviceListHeight = 360.dp
 private val ServiceListHeight = 280.dp
@@ -45,6 +52,8 @@ fun BleScanScreen(
     onStopScan: () -> Unit,
     onConnectDevice: (DiscoveredBleDevice) -> Unit,
     onDisconnectDevice: () -> Unit,
+    onSubscribe: (String, String, BleSubscriptionMode) -> Unit,
+    onUnsubscribe: () -> Unit,
     onDeviceNameFilterChange: (String) -> Unit,
     onClearLogs: () -> Unit,
     onRequestPermissions: () -> Unit,
@@ -100,6 +109,7 @@ fun BleScanScreen(
                 selectedDevice = uiState.selectedDevice,
                 connectionStatus = uiState.connectionStatus,
                 connectionMessage = uiState.connectionMessage,
+                subscriptionStatus = uiState.subscriptionStatus,
                 onConnectDevice = onConnectDevice,
                 onDisconnectDevice = onDisconnectDevice,
             )
@@ -111,9 +121,9 @@ fun BleScanScreen(
 
         item(key = "service_panel") {
             ServiceDiscoveryPanel(
-                status = uiState.serviceDiscoveryStatus,
-                message = uiState.serviceDiscoveryMessage,
-                services = uiState.services,
+                uiState = uiState,
+                onSubscribe = onSubscribe,
+                onUnsubscribe = onUnsubscribe,
             )
         }
 
@@ -193,6 +203,7 @@ private fun DeviceList(
     selectedDevice: DiscoveredBleDevice?,
     connectionStatus: BleConnectionStatus,
     connectionMessage: String,
+    subscriptionStatus: BleSubscriptionStatus,
     onConnectDevice: (DiscoveredBleDevice) -> Unit,
     onDisconnectDevice: () -> Unit,
     modifier: Modifier = Modifier,
@@ -266,7 +277,8 @@ private fun DeviceList(
                         }
                         OutlinedButton(
                             onClick = onDisconnectDevice,
-                            enabled = connectionStatus.canDisconnect(isSelected),
+                            enabled = connectionStatus.canDisconnect(isSelected) &&
+                                subscriptionStatus.canRunGattOperation(),
                         ) {
                             Text("Disconnect")
                         }
@@ -279,9 +291,9 @@ private fun DeviceList(
 
 @Composable
 private fun ServiceDiscoveryPanel(
-    status: BleServiceDiscoveryStatus,
-    message: String,
-    services: List<BleGattService>,
+    uiState: BleScanUiState,
+    onSubscribe: (String, String, BleSubscriptionMode) -> Unit,
+    onUnsubscribe: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -289,20 +301,39 @@ private fun ServiceDiscoveryPanel(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Text(
-            text = "GATT Services (${services.size})",
+            text = "GATT Services (${uiState.services.size})",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold,
         )
         Text(
-            text = "Discovery: ${status.name}",
+            text = "Discovery: ${uiState.serviceDiscoveryStatus.name}",
             style = MaterialTheme.typography.bodyMedium,
         )
         Text(
-            text = message,
+            text = uiState.serviceDiscoveryMessage,
             style = MaterialTheme.typography.bodySmall,
         )
+        Text(
+            text = "Subscription: ${uiState.subscriptionStatus.name}",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Text(
+            text = uiState.subscriptionMessage,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Text(
+            text = "Last received: ${uiState.lastNotification?.timestampMillis?.formatLogTimestamp() ?: "none"}",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        uiState.lastNotification?.let { event ->
+            Text(
+                text = "${event.characteristicUuid} bytes=${event.byteCount} value=${event.valueHex}",
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+            )
+        }
 
-        if (services.isEmpty()) {
+        if (uiState.services.isEmpty()) {
             Text(
                 text = "No GATT services discovered.",
                 style = MaterialTheme.typography.bodyMedium,
@@ -317,17 +348,31 @@ private fun ServiceDiscoveryPanel(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             itemsIndexed(
-                items = services,
+                items = uiState.services,
                 key = { index, service -> service.serviceKey(index) },
             ) { _, service ->
-                ServiceItem(service = service)
+                ServiceItem(
+                    service = service,
+                    connectionStatus = uiState.connectionStatus,
+                    subscriptionStatus = uiState.subscriptionStatus,
+                    activeSubscription = uiState.activeSubscription,
+                    onSubscribe = onSubscribe,
+                    onUnsubscribe = onUnsubscribe,
+                )
             }
         }
     }
 }
 
 @Composable
-private fun ServiceItem(service: BleGattService) {
+private fun ServiceItem(
+    service: BleGattService,
+    connectionStatus: BleConnectionStatus,
+    subscriptionStatus: BleSubscriptionStatus,
+    activeSubscription: BleCharacteristicSubscription?,
+    onSubscribe: (String, String, BleSubscriptionMode) -> Unit,
+    onUnsubscribe: () -> Unit,
+) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
         tonalElevation = 1.dp,
@@ -347,14 +392,36 @@ private fun ServiceItem(service: BleGattService) {
                 style = MaterialTheme.typography.bodySmall,
             )
             service.characteristics.forEach { characteristic ->
-                CharacteristicItem(characteristic = characteristic)
+                CharacteristicItem(
+                    serviceUuid = service.uuid,
+                    characteristic = characteristic,
+                    connectionStatus = connectionStatus,
+                    subscriptionStatus = subscriptionStatus,
+                    activeSubscription = activeSubscription,
+                    onSubscribe = onSubscribe,
+                    onUnsubscribe = onUnsubscribe,
+                )
             }
         }
     }
 }
 
 @Composable
-private fun CharacteristicItem(characteristic: BleGattCharacteristicInfo) {
+private fun CharacteristicItem(
+    serviceUuid: String,
+    characteristic: BleGattCharacteristicInfo,
+    connectionStatus: BleConnectionStatus,
+    subscriptionStatus: BleSubscriptionStatus,
+    activeSubscription: BleCharacteristicSubscription?,
+    onSubscribe: (String, String, BleSubscriptionMode) -> Unit,
+    onUnsubscribe: () -> Unit,
+) {
+    val subscriptionModes = characteristic.subscriptionModes()
+    val activeMode = activeSubscription?.takeIf {
+        it.serviceUuid == serviceUuid && it.characteristicUuid == characteristic.uuid
+    }?.mode
+    val canStartSubscription = connectionStatus == BleConnectionStatus.Connected &&
+        subscriptionStatus.canStartSubscription()
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(
             text = characteristic.uuid,
@@ -365,6 +432,31 @@ private fun CharacteristicItem(characteristic: BleGattCharacteristicInfo) {
             text = "Properties: ${characteristic.propertyLabels().joinToString()}",
             style = MaterialTheme.typography.bodySmall,
         )
+        if (subscriptionModes.isNotEmpty()) {
+            Text(
+                text = "Subscribe support: ${subscriptionModes.joinToString { it.name.lowercase() }}",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                subscriptionModes.forEach { mode ->
+                    Button(
+                        onClick = { onSubscribe(serviceUuid, characteristic.uuid, mode) },
+                        enabled = canStartSubscription && activeSubscription == null,
+                    ) {
+                        Text(mode.actionLabel())
+                    }
+                }
+                OutlinedButton(
+                    onClick = onUnsubscribe,
+                    enabled = activeMode != null && subscriptionStatus.canStopSubscription(),
+                ) {
+                    Text("Unsubscribe")
+                }
+            }
+        }
     }
 }
 
@@ -496,6 +588,8 @@ private fun BleScanScreenPreview() {
             onStopScan = {},
             onConnectDevice = {},
             onDisconnectDevice = {},
+            onSubscribe = { _, _, _ -> },
+            onUnsubscribe = {},
             onDeviceNameFilterChange = {},
             onClearLogs = {},
             onRequestPermissions = {},
@@ -519,4 +613,27 @@ private fun BleConnectionStatus.canStartConnect(): Boolean {
 private fun BleConnectionStatus.canDisconnect(isSelected: Boolean): Boolean {
     return isSelected &&
         (this == BleConnectionStatus.Connecting || this == BleConnectionStatus.Connected)
+}
+
+private fun BleSubscriptionStatus.canStartSubscription(): Boolean {
+    return this == BleSubscriptionStatus.Idle || this == BleSubscriptionStatus.Failed
+}
+
+private fun BleSubscriptionStatus.canRunGattOperation(): Boolean {
+    return this != BleSubscriptionStatus.Subscribing && this != BleSubscriptionStatus.Unsubscribing
+}
+
+private fun BleSubscriptionStatus.canStopSubscription(): Boolean {
+    return this == BleSubscriptionStatus.Subscribed || this == BleSubscriptionStatus.Failed
+}
+
+private fun BleSubscriptionMode.actionLabel(): String {
+    return when (this) {
+        BleSubscriptionMode.Notification -> "Notify"
+        BleSubscriptionMode.Indication -> "Indicate"
+    }
+}
+
+private fun Long.formatLogTimestamp(): String {
+    return SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date(this))
 }
