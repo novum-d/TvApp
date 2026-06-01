@@ -1,7 +1,9 @@
 package io.novumd.tvapp.ui.scan
 
 import io.novumd.tvapp.ble.BleConnectionStatus
+import io.novumd.tvapp.ble.BleGattService
 import io.novumd.tvapp.ble.BleLogEntry
+import io.novumd.tvapp.ble.BleServiceDiscoveryStatus
 import io.novumd.tvapp.ble.DiscoveredBleDevice
 
 private const val MAX_VISIBLE_LOG_ENTRIES = 200
@@ -16,6 +18,9 @@ data class BleScanUiState(
     val selectedDevice: DiscoveredBleDevice? = null,
     val connectionStatus: BleConnectionStatus = BleConnectionStatus.Disconnected,
     val connectionMessage: String = "No active GATT connection.",
+    val serviceDiscoveryStatus: BleServiceDiscoveryStatus = BleServiceDiscoveryStatus.Idle,
+    val serviceDiscoveryMessage: String = "No discovered services.",
+    val services: List<BleGattService> = emptyList(),
 )
 
 enum class BleScanStatus {
