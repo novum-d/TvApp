@@ -1,5 +1,6 @@
 package io.novumd.tvapp.ui.scan
 
+import android.bluetooth.BluetoothGattCharacteristic
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -23,9 +24,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import io.novumd.tvapp.ble.BleConnectionStatus
+import io.novumd.tvapp.ble.BleGattCharacteristicInfo
+import io.novumd.tvapp.ble.BleGattService
 import io.novumd.tvapp.ble.BleLogEntry
+import io.novumd.tvapp.ble.BleServiceDiscoveryStatus
 import io.novumd.tvapp.ble.DiscoveredBleDevice
 import io.novumd.tvapp.ble.formatForDisplay
+import io.novumd.tvapp.ble.propertyLabels
 import io.novumd.tvapp.ui.theme.TvAppTheme
 
 @Composable
@@ -83,6 +88,15 @@ fun BleScanScreen(
             connectionMessage = uiState.connectionMessage,
             onConnectDevice = onConnectDevice,
             onDisconnectDevice = onDisconnectDevice,
+            modifier = Modifier.weight(1f),
+        )
+
+        HorizontalDivider()
+
+        ServiceDiscoveryPanel(
+            status = uiState.serviceDiscoveryStatus,
+            message = uiState.serviceDiscoveryMessage,
+            services = uiState.services,
             modifier = Modifier.weight(1f),
         )
 
@@ -242,6 +256,92 @@ private fun DeviceList(
 }
 
 @Composable
+private fun ServiceDiscoveryPanel(
+    status: BleServiceDiscoveryStatus,
+    message: String,
+    services: List<BleGattService>,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            text = "GATT Services (${services.size})",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            text = "Discovery: ${status.name}",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Text(
+            text = message,
+            style = MaterialTheme.typography.bodySmall,
+        )
+
+        if (services.isEmpty()) {
+            Text(
+                text = "No GATT services discovered.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            return@Column
+        }
+
+        LazyColumn(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            items(services) { service ->
+                ServiceItem(service = service)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ServiceItem(service: BleGattService) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        tonalElevation = 1.dp,
+        shape = MaterialTheme.shapes.small,
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text(
+                text = service.uuid,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = "Characteristics: ${service.characteristics.size}",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            service.characteristics.forEach { characteristic ->
+                CharacteristicItem(characteristic = characteristic)
+            }
+        }
+    }
+}
+
+@Composable
+private fun CharacteristicItem(characteristic: BleGattCharacteristicInfo) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            text = characteristic.uuid,
+            style = MaterialTheme.typography.bodySmall,
+            fontFamily = FontFamily.Monospace,
+        )
+        Text(
+            text = "Properties: ${characteristic.propertyLabels().joinToString()}",
+            style = MaterialTheme.typography.bodySmall,
+        )
+    }
+}
+
+@Composable
 private fun LogHeader(
     hasLogs: Boolean,
     onClearLogs: () -> Unit,
@@ -330,6 +430,20 @@ private fun BleScanScreenPreview() {
                 ),
                 connectionStatus = BleConnectionStatus.Connected,
                 connectionMessage = "Connected to TV BLE.",
+                serviceDiscoveryStatus = BleServiceDiscoveryStatus.Discovered,
+                serviceDiscoveryMessage = "Discovered 1 services and 1 characteristics.",
+                services = listOf(
+                    BleGattService(
+                        uuid = "0000180f-0000-1000-8000-00805f9b34fb",
+                        characteristics = listOf(
+                            BleGattCharacteristicInfo(
+                                uuid = "00002a19-0000-1000-8000-00805f9b34fb",
+                                properties = BluetoothGattCharacteristic.PROPERTY_READ or
+                                    BluetoothGattCharacteristic.PROPERTY_NOTIFY,
+                            ),
+                        ),
+                    ),
+                ),
             ),
             onStartScan = {},
             onStopScan = {},

@@ -5,9 +5,11 @@ import androidx.lifecycle.AndroidViewModel
 import io.novumd.tvapp.ble.BleConnectionManager
 import io.novumd.tvapp.ble.BleConnectionStartResult
 import io.novumd.tvapp.ble.BleConnectionStatus
+import io.novumd.tvapp.ble.BleGattService
 import io.novumd.tvapp.ble.BleLogEntry
 import io.novumd.tvapp.ble.BleScanStartResult
 import io.novumd.tvapp.ble.BleScanner
+import io.novumd.tvapp.ble.BleServiceDiscoveryStatus
 import io.novumd.tvapp.ble.DiscoveredBleDevice
 import io.novumd.tvapp.ble.missingBleScanPermissions
 import io.novumd.tvapp.ble.upsertDiscoveredDevice
@@ -204,6 +206,7 @@ class BleScanViewModel(application: Application) : AndroidViewModel(application)
             val result = connectionManager.connect(
                 device = device,
                 onStateChanged = ::onConnectionStateChanged,
+                onServicesChanged = ::onServicesChanged,
                 onLog = ::appendLog,
             )
         ) {
@@ -212,6 +215,9 @@ class BleScanViewModel(application: Application) : AndroidViewModel(application)
                     selectedDevice = device,
                     connectionStatus = BleConnectionStatus.Connecting,
                     connectionMessage = "Connecting to ${device.name}.",
+                    serviceDiscoveryStatus = BleServiceDiscoveryStatus.Idle,
+                    serviceDiscoveryMessage = "No discovered services.",
+                    services = emptyList(),
                 )
             }
 
@@ -221,6 +227,9 @@ class BleScanViewModel(application: Application) : AndroidViewModel(application)
                         selectedDevice = device,
                         connectionStatus = BleConnectionStatus.Failed,
                         connectionMessage = "Bluetooth is off.",
+                        serviceDiscoveryStatus = BleServiceDiscoveryStatus.Idle,
+                        serviceDiscoveryMessage = "No discovered services.",
+                        services = emptyList(),
                     )
                 }
                 appendLog(
@@ -248,6 +257,9 @@ class BleScanViewModel(application: Application) : AndroidViewModel(application)
                         selectedDevice = device,
                         connectionStatus = BleConnectionStatus.Failed,
                         connectionMessage = "Invalid BLE address.",
+                        serviceDiscoveryStatus = BleServiceDiscoveryStatus.Idle,
+                        serviceDiscoveryMessage = "No discovered services.",
+                        services = emptyList(),
                     )
                 }
                 appendLog(
@@ -267,6 +279,9 @@ class BleScanViewModel(application: Application) : AndroidViewModel(application)
                         connectionStatus = BleConnectionStatus.Failed,
                         connectionMessage = "BLE connect permission is required.",
                         missingPermissions = result.missingPermissions,
+                        serviceDiscoveryStatus = BleServiceDiscoveryStatus.Idle,
+                        serviceDiscoveryMessage = "No discovered services.",
+                        services = emptyList(),
                     )
                 }
                 appendLog(
@@ -284,6 +299,9 @@ class BleScanViewModel(application: Application) : AndroidViewModel(application)
                     selectedDevice = device,
                     connectionStatus = BleConnectionStatus.Failed,
                     connectionMessage = result.message,
+                    serviceDiscoveryStatus = BleServiceDiscoveryStatus.Idle,
+                    serviceDiscoveryMessage = "No discovered services.",
+                    services = emptyList(),
                 )
             }
         }
@@ -338,6 +356,8 @@ class BleScanViewModel(application: Application) : AndroidViewModel(application)
         status: BleConnectionStatus,
         message: String,
     ) {
+        val shouldClearServices = status == BleConnectionStatus.Disconnected ||
+            status == BleConnectionStatus.Failed
         _uiState.update {
             it.copy(
                 connectionStatus = status,
@@ -347,6 +367,35 @@ class BleScanViewModel(application: Application) : AndroidViewModel(application)
                 } else {
                     it.selectedDevice
                 },
+                serviceDiscoveryStatus = if (shouldClearServices) {
+                    BleServiceDiscoveryStatus.Idle
+                } else {
+                    it.serviceDiscoveryStatus
+                },
+                serviceDiscoveryMessage = if (shouldClearServices) {
+                    "No discovered services."
+                } else {
+                    it.serviceDiscoveryMessage
+                },
+                services = if (shouldClearServices) {
+                    emptyList()
+                } else {
+                    it.services
+                },
+            )
+        }
+    }
+
+    private fun onServicesChanged(
+        status: BleServiceDiscoveryStatus,
+        services: List<BleGattService>,
+        message: String,
+    ) {
+        _uiState.update {
+            it.copy(
+                serviceDiscoveryStatus = status,
+                serviceDiscoveryMessage = message,
+                services = services,
             )
         }
     }

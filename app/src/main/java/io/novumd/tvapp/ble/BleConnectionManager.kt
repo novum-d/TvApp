@@ -11,6 +11,7 @@ import android.os.Looper
 
 private const val CONNECT_TIMEOUT_MILLIS = 15_000L
 private const val DISCONNECT_TIMEOUT_MILLIS = 5_000L
+private const val SERVICE_DISCOVERY_TIMEOUT_MILLIS = 10_000L
 
 class BleConnectionManager(
     private val context: Context,
@@ -24,11 +25,13 @@ class BleConnectionManager(
     private var status: BleConnectionStatus = BleConnectionStatus.Disconnected
     private var connectTimeout: Runnable? = null
     private var disconnectTimeout: Runnable? = null
+    private var serviceDiscoveryTimeout: Runnable? = null
 
     @SuppressLint("MissingPermission")
     fun connect(
         device: DiscoveredBleDevice,
         onStateChanged: (BleConnectionStatus, String) -> Unit,
+        onServicesChanged: (BleServiceDiscoveryStatus, List<BleGattService>, String) -> Unit,
         onLog: (BleLogEntry) -> Unit,
     ): BleConnectionStartResult {
         val missingPermissions = context.missingBleConnectPermissions()
@@ -72,7 +75,7 @@ class BleConnectionManager(
             ),
         )
 
-        val callback = connectionCallback(onStateChanged, onLog)
+        val callback = connectionCallback(onStateChanged, onServicesChanged, onLog)
         return try {
             bluetoothGatt = bluetoothDevice.connectGatt(
                 context,
@@ -174,6 +177,7 @@ class BleConnectionManager(
 
     private fun connectionCallback(
         onStateChanged: (BleConnectionStatus, String) -> Unit,
+        onServicesChanged: (BleServiceDiscoveryStatus, List<BleGattService>, String) -> Unit,
         onLog: (BleLogEntry) -> Unit,
     ): BluetoothGattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(
@@ -204,6 +208,7 @@ class BleConnectionManager(
                         message = "Connected to ${activeDevice?.name ?: deviceAddress}.",
                         onStateChanged = onStateChanged,
                     )
+                    startServiceDiscovery(gatt, onServicesChanged, onLog)
                 }
 
                 newState == BluetoothProfile.STATE_DISCONNECTED -> {
@@ -219,6 +224,11 @@ class BleConnectionManager(
                         "GATT disconnected with status $gattStatus."
                     }
                     closeGatt(gatt, onLog, "closedAfterDisconnect")
+                    onServicesChanged(
+                        BleServiceDiscoveryStatus.Idle,
+                        emptyList(),
+                        "No discovered services.",
+                    )
                     updateStatus(
                         status = nextStatus,
                         message = message,
@@ -229,6 +239,11 @@ class BleConnectionManager(
                 gattStatus != BluetoothGatt.GATT_SUCCESS -> {
                     cancelTimeouts()
                     closeGatt(gatt, onLog, "closedAfterGattError")
+                    onServicesChanged(
+                        BleServiceDiscoveryStatus.Failed,
+                        emptyList(),
+                        "GATT callback failed with status $gattStatus.",
+                    )
                     updateStatus(
                         status = BleConnectionStatus.Failed,
                         message = "GATT callback failed with status $gattStatus.",
@@ -237,6 +252,145 @@ class BleConnectionManager(
                 }
             }
         }
+
+        override fun onServicesDiscovered(
+            gatt: BluetoothGatt,
+            gattStatus: Int,
+        ) {
+            serviceDiscoveryTimeout?.let(handler::removeCallbacks)
+            serviceDiscoveryTimeout = null
+
+            val services = if (gattStatus == BluetoothGatt.GATT_SUCCESS) {
+                gatt.services.map { service -> service.toBleGattService() }
+            } else {
+                emptyList()
+            }
+            val characteristicCount = services.sumOf { service -> service.characteristics.size }
+            val message = if (gattStatus == BluetoothGatt.GATT_SUCCESS) {
+                "serviceCount=${services.size} characteristicCount=$characteristicCount"
+            } else {
+                "service discovery failed with status $gattStatus"
+            }
+            onLog(
+                connectionLog(
+                    timestampMillis = now(),
+                    callbackName = "BluetoothGattCallback.onServicesDiscovered",
+                    gattStatus = gattStatus.toString(),
+                    connectionState = status.name,
+                    operationType = "serviceDiscovery",
+                    targetDevice = activeDevice?.address ?: gatt.device.address,
+                    message = message,
+                ),
+            )
+
+            if (gattStatus == BluetoothGatt.GATT_SUCCESS) {
+                onServicesChanged(
+                    BleServiceDiscoveryStatus.Discovered,
+                    services,
+                    "Discovered ${services.size} services and $characteristicCount characteristics.",
+                )
+            } else {
+                onServicesChanged(
+                    BleServiceDiscoveryStatus.Failed,
+                    emptyList(),
+                    "Service discovery failed with status $gattStatus.",
+                )
+            }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startServiceDiscovery(
+        gatt: BluetoothGatt,
+        onServicesChanged: (BleServiceDiscoveryStatus, List<BleGattService>, String) -> Unit,
+        onLog: (BleLogEntry) -> Unit,
+    ) {
+        onServicesChanged(
+            BleServiceDiscoveryStatus.Discovering,
+            emptyList(),
+            "Discovering GATT services.",
+        )
+        onLog(
+            connectionLog(
+                timestampMillis = now(),
+                callbackName = "BluetoothGatt.discoverServices",
+                connectionState = status.name,
+                operationType = "serviceDiscovery",
+                targetDevice = activeDevice?.address ?: gatt.device.address,
+                message = "discoverServices requested",
+            ),
+        )
+
+        val started = try {
+            gatt.discoverServices()
+        } catch (exception: SecurityException) {
+            onLog(
+                connectionLog(
+                    timestampMillis = now(),
+                    callbackName = "BluetoothGatt.discoverServices",
+                    gattStatus = "permissionDenied",
+                    connectionState = "failed",
+                    operationType = "serviceDiscovery",
+                    targetDevice = activeDevice?.address ?: gatt.device.address,
+                    message = exception.message ?: "Missing permission while discovering services",
+                ),
+            )
+            false
+        } catch (exception: RuntimeException) {
+            onLog(
+                connectionLog(
+                    timestampMillis = now(),
+                    callbackName = "BluetoothGatt.discoverServices",
+                    gattStatus = "discoverServicesError",
+                    connectionState = "failed",
+                    operationType = "serviceDiscovery",
+                    targetDevice = activeDevice?.address ?: gatt.device.address,
+                    message = exception.message ?: "Unable to discover services",
+                ),
+            )
+            false
+        }
+
+        if (started) {
+            scheduleServiceDiscoveryTimeout(gatt, onServicesChanged, onLog)
+        } else {
+            onServicesChanged(
+                BleServiceDiscoveryStatus.Failed,
+                emptyList(),
+                "Service discovery could not be started.",
+            )
+        }
+    }
+
+    private fun scheduleServiceDiscoveryTimeout(
+        gatt: BluetoothGatt,
+        onServicesChanged: (BleServiceDiscoveryStatus, List<BleGattService>, String) -> Unit,
+        onLog: (BleLogEntry) -> Unit,
+    ) {
+        serviceDiscoveryTimeout?.let(handler::removeCallbacks)
+        serviceDiscoveryTimeout = null
+        val timeout = Runnable {
+            if (status == BleConnectionStatus.Connected) {
+                onLog(
+                    connectionLog(
+                        timestampMillis = now(),
+                        callbackName = "BleConnectionManager.serviceDiscoveryTimeout",
+                        gattStatus = "timeout",
+                        connectionState = status.name,
+                        operationType = "serviceDiscovery",
+                        targetDevice = activeDevice?.address ?: gatt.device.address,
+                        message = "service discovery timeout after ${SERVICE_DISCOVERY_TIMEOUT_MILLIS}ms",
+                    ),
+                )
+                onServicesChanged(
+                    BleServiceDiscoveryStatus.Failed,
+                    emptyList(),
+                    "Service discovery timed out.",
+                )
+            }
+        }
+        serviceDiscoveryTimeout = timeout
+        handler.postDelayed(timeout, SERVICE_DISCOVERY_TIMEOUT_MILLIS)
     }
 
     private fun scheduleConnectTimeout(
@@ -345,6 +499,8 @@ class BleConnectionManager(
         connectTimeout = null
         disconnectTimeout?.let(handler::removeCallbacks)
         disconnectTimeout = null
+        serviceDiscoveryTimeout?.let(handler::removeCallbacks)
+        serviceDiscoveryTimeout = null
     }
 
     private fun closeGatt(
@@ -403,6 +559,13 @@ enum class BleConnectionStatus {
     Connecting,
     Connected,
     Disconnecting,
+    Failed,
+}
+
+enum class BleServiceDiscoveryStatus {
+    Idle,
+    Discovering,
+    Discovered,
     Failed,
 }
 
