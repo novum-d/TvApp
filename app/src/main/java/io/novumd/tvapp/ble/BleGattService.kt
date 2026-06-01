@@ -25,9 +25,7 @@ fun BluetoothGattService.toBleGattService(): BleGattService {
     )
 }
 
-fun BleGattCharacteristicInfo.propertyLabels(): List<String> {
-    return characteristicPropertyLabels(properties)
-}
+fun BleGattCharacteristicInfo.propertyLabels(): List<String> = characteristicPropertyLabels(properties)
 
 fun characteristicPropertyLabels(properties: Int): List<String> {
     val labels = mutableListOf<String>()
@@ -58,6 +56,4 @@ fun characteristicPropertyLabels(properties: Int): List<String> {
     return labels.ifEmpty { listOf("none") }
 }
 
-private infix fun Int.hasProperty(property: Int): Boolean {
-    return this and property != 0
-}
+private infix fun Int.hasProperty(property: Int): Boolean = this and property != 0

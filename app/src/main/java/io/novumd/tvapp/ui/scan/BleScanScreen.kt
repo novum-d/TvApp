@@ -4,11 +4,12 @@ import android.bluetooth.BluetoothGattCharacteristic
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -33,6 +34,10 @@ import io.novumd.tvapp.ble.formatForDisplay
 import io.novumd.tvapp.ble.propertyLabels
 import io.novumd.tvapp.ui.theme.TvAppTheme
 
+private val DeviceListHeight = 360.dp
+private val ServiceListHeight = 280.dp
+private val LogListHeight = 96.dp
+
 @Composable
 fun BleScanScreen(
     uiState: BleScanUiState,
@@ -50,66 +55,81 @@ fun BleScanScreen(
         query = uiState.deviceNameFilterQuery,
     )
 
-    Column(
+    LazyColumn(
         modifier = modifier
-            .fillMaxSize()
+            .fillMaxWidth()
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        ScanHeader(
-            uiState = uiState,
-            onStartScan = onStartScan,
-            onStopScan = onStopScan,
-            onRequestPermissions = onRequestPermissions,
-        )
+        item(key = "scan_header") {
+            ScanHeader(
+                uiState = uiState,
+                onStartScan = onStartScan,
+                onStopScan = onStopScan,
+                onRequestPermissions = onRequestPermissions,
+            )
+        }
 
-        HorizontalDivider()
+        item(key = "device_divider") {
+            HorizontalDivider()
+        }
 
-        Text(
-            text = "Detected Devices (${filteredDevices.size}/${uiState.devices.size})",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
-        )
-        OutlinedTextField(
-            value = uiState.deviceNameFilterQuery,
-            onValueChange = onDeviceNameFilterChange,
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            label = {
-                Text("Filter by device name")
-            },
-        )
-        DeviceList(
-            devices = filteredDevices,
-            hasAnyDevices = uiState.devices.isNotEmpty(),
-            filterQuery = uiState.deviceNameFilterQuery,
-            selectedDevice = uiState.selectedDevice,
-            connectionStatus = uiState.connectionStatus,
-            connectionMessage = uiState.connectionMessage,
-            onConnectDevice = onConnectDevice,
-            onDisconnectDevice = onDisconnectDevice,
-            modifier = Modifier.weight(1f),
-        )
+        item(key = "device_title") {
+            Text(
+                text = "Detected Devices (${filteredDevices.size}/${uiState.devices.size})",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+        item(key = "device_filter") {
+            OutlinedTextField(
+                value = uiState.deviceNameFilterQuery,
+                onValueChange = onDeviceNameFilterChange,
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = {
+                    Text("Filter by device name")
+                },
+            )
+        }
+        item(key = "device_list") {
+            DeviceList(
+                devices = filteredDevices,
+                hasAnyDevices = uiState.devices.isNotEmpty(),
+                filterQuery = uiState.deviceNameFilterQuery,
+                selectedDevice = uiState.selectedDevice,
+                connectionStatus = uiState.connectionStatus,
+                connectionMessage = uiState.connectionMessage,
+                onConnectDevice = onConnectDevice,
+                onDisconnectDevice = onDisconnectDevice,
+            )
+        }
 
-        HorizontalDivider()
+        item(key = "service_divider") {
+            HorizontalDivider()
+        }
 
-        ServiceDiscoveryPanel(
-            status = uiState.serviceDiscoveryStatus,
-            message = uiState.serviceDiscoveryMessage,
-            services = uiState.services,
-            modifier = Modifier.weight(1f),
-        )
+        item(key = "service_panel") {
+            ServiceDiscoveryPanel(
+                status = uiState.serviceDiscoveryStatus,
+                message = uiState.serviceDiscoveryMessage,
+                services = uiState.services,
+            )
+        }
 
-        HorizontalDivider()
+        item(key = "log_divider") {
+            HorizontalDivider()
+        }
 
-        LogHeader(
-            hasLogs = uiState.logs.isNotEmpty(),
-            onClearLogs = onClearLogs,
-        )
-        LogList(
-            logs = uiState.logs,
-            modifier = Modifier.weight(1f),
-        )
+        item(key = "log_header") {
+            LogHeader(
+                hasLogs = uiState.logs.isNotEmpty(),
+                onClearLogs = onClearLogs,
+            )
+        }
+        item(key = "log_list") {
+            LogList(logs = uiState.logs)
+        }
     }
 }
 
@@ -184,19 +204,21 @@ private fun DeviceList(
             } else {
                 "No BLE devices detected."
             },
-            modifier = modifier,
+            modifier = modifier.fillMaxWidth(),
             style = MaterialTheme.typography.bodyMedium,
         )
         return
     }
 
     LazyColumn(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .height(DeviceListHeight),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         items(
             items = devices,
-            key = { it.address },
+            key = { device -> device.address },
         ) { device ->
             val isSelected = selectedDevice?.address == device.address
             Surface(
@@ -289,10 +311,15 @@ private fun ServiceDiscoveryPanel(
         }
 
         LazyColumn(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(ServiceListHeight),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            items(services) { service ->
+            itemsIndexed(
+                items = services,
+                key = { index, service -> service.serviceKey(index) },
+            ) { _, service ->
                 ServiceItem(service = service)
             }
         }
@@ -373,17 +400,22 @@ private fun LogList(
     if (logs.isEmpty()) {
         Text(
             text = "No BLE events logged.",
-            modifier = modifier,
+            modifier = modifier.fillMaxWidth(),
             style = MaterialTheme.typography.bodyMedium,
         )
         return
     }
 
     LazyColumn(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .height(LogListHeight),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        items(logs) { entry ->
+        itemsIndexed(
+            items = logs,
+            key = { index, entry -> entry.logKey(index) },
+        ) { _, entry ->
             Text(
                 text = entry.formatForDisplay(),
                 style = MaterialTheme.typography.bodySmall,
@@ -392,6 +424,21 @@ private fun LogList(
         }
     }
 }
+
+private fun BleLogEntry.logKey(index: Int): String {
+    return listOf(
+        timestampMillis,
+        callbackName,
+        gattStatus,
+        connectionState,
+        operationType,
+        targetDevice,
+        characteristicUuid,
+        index,
+    ).joinToString(separator = ":")
+}
+
+private fun BleGattService.serviceKey(index: Int): String = "$uuid:$index"
 
 @Preview(showBackground = true)
 @Composable
