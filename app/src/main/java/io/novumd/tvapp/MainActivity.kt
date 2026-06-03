@@ -19,6 +19,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
 import io.novumd.tvapp.ble.requiredBleScanPermissions
 import io.novumd.tvapp.ui.scan.BleScanScreen
+import io.novumd.tvapp.ui.scan.BleScanScreenActions
 import io.novumd.tvapp.ui.scan.BleScanViewModel
 import io.novumd.tvapp.ui.theme.TvAppTheme
 
@@ -55,17 +56,19 @@ class MainActivity : ComponentActivity() {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     BleScanScreen(
                         uiState = uiState,
-                        onStartScan = viewModel::startScan,
-                        onStopScan = viewModel::stopScan,
-                        onConnectDevice = viewModel::connect,
-                        onDisconnectDevice = viewModel::disconnect,
-                        onSubscribe = viewModel::subscribe,
-                        onUnsubscribe = viewModel::unsubscribe,
-                        onDeviceNameFilterChange = viewModel::updateDeviceNameFilter,
-                        onClearLogs = viewModel::clearLogs,
-                        onRequestPermissions = {
-                            permissionLauncher.launch(requiredBleScanPermissions())
-                        },
+                        actions = BleScanScreenActions(
+                            onStartScan = viewModel::startScan,
+                            onStopScan = viewModel::stopScan,
+                            onConnectDevice = viewModel::connect,
+                            onDisconnectDevice = viewModel::disconnect,
+                            onSubscribe = viewModel::subscribe,
+                            onUnsubscribe = viewModel::unsubscribe,
+                            onDeviceNameFilterChange = viewModel::updateDeviceNameFilter,
+                            onClearLogs = viewModel::clearLogs,
+                            onRequestPermissions = {
+                                permissionLauncher.launch(requiredBleScanPermissions())
+                            },
+                        ),
                         modifier = Modifier.padding(innerPadding),
                     )
                 }

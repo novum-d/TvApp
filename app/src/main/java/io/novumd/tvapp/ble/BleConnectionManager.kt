@@ -181,7 +181,6 @@ class BleConnectionManager(
             gatt = gatt,
             pending = pending,
             descriptorValue = subscription.mode.enableDescriptorValue(),
-            startFailureStatus = BleSubscriptionStatus.Failed,
             startFailureSubscription = null,
             onSubscriptionChanged = onSubscriptionChanged,
             onLog = onLog,
@@ -229,7 +228,6 @@ class BleConnectionManager(
             gatt = gatt,
             pending = pending,
             descriptorValue = BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE,
-            startFailureStatus = BleSubscriptionStatus.Failed,
             startFailureSubscription = activeSubscription,
             onSubscriptionChanged = onSubscriptionChanged,
             onLog = onLog,
@@ -524,7 +522,7 @@ class BleConnectionManager(
             onSubscriptionChanged(nextStatus, nextSubscription, message)
         }
 
-        @Suppress("DEPRECATION")
+        @Suppress("OVERRIDE_DEPRECATION")
         override fun onCharacteristicChanged(
             gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic,
@@ -665,7 +663,6 @@ class BleConnectionManager(
         gatt: BluetoothGatt,
         pending: PendingSubscription,
         descriptorValue: ByteArray,
-        startFailureStatus: BleSubscriptionStatus,
         startFailureSubscription: BleCharacteristicSubscription?,
         onSubscriptionChanged: (BleSubscriptionStatus, BleCharacteristicSubscription?, String) -> Unit,
         onLog: (BleLogEntry) -> Unit,
@@ -680,7 +677,7 @@ class BleConnectionManager(
         if (!notificationStarted) {
             pendingSubscription = null
             onSubscriptionChanged(
-                startFailureStatus,
+                BleSubscriptionStatus.Failed,
                 startFailureSubscription,
                 "setCharacteristicNotification returned false.",
             )
@@ -720,7 +717,7 @@ class BleConnectionManager(
                     )
                 }
                 onSubscriptionChanged(
-                    startFailureStatus,
+                    BleSubscriptionStatus.Failed,
                     startFailureSubscription,
                     "CCCD write could not be started.",
                 )
