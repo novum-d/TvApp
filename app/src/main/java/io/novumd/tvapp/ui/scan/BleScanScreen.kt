@@ -27,6 +27,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import io.novumd.tvapp.ble.BleCharacteristicSubscription
+import io.novumd.tvapp.ble.BleCharacteristicWriteType
 import io.novumd.tvapp.ble.BleConnectionStatus
 import io.novumd.tvapp.ble.BleGattCharacteristicInfo
 import io.novumd.tvapp.ble.BleGattService
@@ -38,6 +39,9 @@ import io.novumd.tvapp.ble.DiscoveredBleDevice
 import io.novumd.tvapp.ble.formatForDisplay
 import io.novumd.tvapp.ble.propertyLabels
 import io.novumd.tvapp.ble.subscriptionModes
+import io.novumd.tvapp.ble.toDisplayHex
+import io.novumd.tvapp.ble.writeTypes
+import io.novumd.tvapp.tv.TvCommand
 import io.novumd.tvapp.ui.theme.TvAppTheme
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -54,6 +58,7 @@ data class BleScanScreenActions(
     val onDisconnectDevice: () -> Unit,
     val onSubscribe: (String, String, BleSubscriptionMode) -> Unit,
     val onUnsubscribe: () -> Unit,
+    val onWriteCommand: (String, String, BleCharacteristicWriteType, TvCommand) -> Unit,
     val onDeviceNameFilterChange: (String) -> Unit,
     val onClearLogs: () -> Unit,
     val onRequestPermissions: () -> Unit,
@@ -130,6 +135,7 @@ fun BleScanScreen(
                 uiState = uiState,
                 onSubscribe = actions.onSubscribe,
                 onUnsubscribe = actions.onUnsubscribe,
+                onWriteCommand = actions.onWriteCommand,
             )
         }
 
@@ -300,6 +306,7 @@ private fun ServiceDiscoveryPanel(
     uiState: BleScanUiState,
     onSubscribe: (String, String, BleSubscriptionMode) -> Unit,
     onUnsubscribe: () -> Unit,
+    onWriteCommand: (String, String, BleCharacteristicWriteType, TvCommand) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -325,6 +332,14 @@ private fun ServiceDiscoveryPanel(
         )
         Text(
             text = uiState.subscriptionMessage,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Text(
+            text = "Command Write: ${uiState.commandWriteStatus.name} queue=${uiState.commandWriteQueueDepth}",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Text(
+            text = uiState.commandWriteMessage,
             style = MaterialTheme.typography.bodySmall,
         )
         Text(
@@ -364,6 +379,7 @@ private fun ServiceDiscoveryPanel(
                     activeSubscription = uiState.activeSubscription,
                     onSubscribe = onSubscribe,
                     onUnsubscribe = onUnsubscribe,
+                    onWriteCommand = onWriteCommand,
                 )
             }
         }
@@ -378,6 +394,7 @@ private fun ServiceItem(
     activeSubscription: BleCharacteristicSubscription?,
     onSubscribe: (String, String, BleSubscriptionMode) -> Unit,
     onUnsubscribe: () -> Unit,
+    onWriteCommand: (String, String, BleCharacteristicWriteType, TvCommand) -> Unit,
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -406,6 +423,7 @@ private fun ServiceItem(
                     activeSubscription = activeSubscription,
                     onSubscribe = onSubscribe,
                     onUnsubscribe = onUnsubscribe,
+                    onWriteCommand = onWriteCommand,
                 )
             }
         }
@@ -421,13 +439,17 @@ private fun CharacteristicItem(
     activeSubscription: BleCharacteristicSubscription?,
     onSubscribe: (String, String, BleSubscriptionMode) -> Unit,
     onUnsubscribe: () -> Unit,
+    onWriteCommand: (String, String, BleCharacteristicWriteType, TvCommand) -> Unit,
 ) {
     val subscriptionModes = characteristic.subscriptionModes()
+    val writeTypes = characteristic.writeTypes()
     val activeMode = activeSubscription?.takeIf {
         it.serviceUuid == serviceUuid && it.characteristicUuid == characteristic.uuid
     }?.mode
     val canStartSubscription = connectionStatus == BleConnectionStatus.Connected &&
         subscriptionStatus.canStartSubscription()
+    val canQueueWrite = connectionStatus == BleConnectionStatus.Connected &&
+        subscriptionStatus.canRunGattOperation()
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(
             text = characteristic.uuid,
@@ -460,6 +482,29 @@ private fun CharacteristicItem(
                     enabled = activeMode != null && subscriptionStatus.canStopSubscription(),
                 ) {
                     Text("Unsubscribe")
+                }
+            }
+        }
+        if (writeTypes.isNotEmpty()) {
+            Text(
+                text = "Write support: ${writeTypes.joinToString { it.name.lowercase() }}",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            writeTypes.forEach { writeType ->
+                Text(
+                    text = "Sample commands (${writeType.name.lowercase()}):",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TvCommand.entries.forEach { command ->
+                        OutlinedButton(
+                            onClick = { onWriteCommand(serviceUuid, characteristic.uuid, writeType, command) },
+                            enabled = canQueueWrite,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("${command.displayName} (${command.payload().toDisplayHex()})")
+                        }
+                    }
                 }
             }
         }
@@ -584,6 +629,7 @@ private fun BleScanScreenPreview() {
                             BleGattCharacteristicInfo(
                                 uuid = "00002a19-0000-1000-8000-00805f9b34fb",
                                 properties = BluetoothGattCharacteristic.PROPERTY_READ or
+                                    BluetoothGattCharacteristic.PROPERTY_WRITE or
                                     BluetoothGattCharacteristic.PROPERTY_NOTIFY,
                             ),
                         ),
@@ -597,6 +643,7 @@ private fun BleScanScreenPreview() {
                 onDisconnectDevice = {},
                 onSubscribe = { _, _, _ -> },
                 onUnsubscribe = {},
+                onWriteCommand = { _, _, _, _ -> },
                 onDeviceNameFilterChange = {},
                 onClearLogs = {},
                 onRequestPermissions = {},

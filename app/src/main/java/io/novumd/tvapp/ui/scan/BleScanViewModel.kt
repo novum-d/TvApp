@@ -3,6 +3,10 @@ package io.novumd.tvapp.ui.scan
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import io.novumd.tvapp.ble.BleCharacteristicSubscription
+import io.novumd.tvapp.ble.BleCharacteristicWriteType
+import io.novumd.tvapp.ble.BleCommandWriteRequest
+import io.novumd.tvapp.ble.BleCommandWriteStartResult
+import io.novumd.tvapp.ble.BleCommandWriteStatus
 import io.novumd.tvapp.ble.BleConnectionManager
 import io.novumd.tvapp.ble.BleConnectionStartResult
 import io.novumd.tvapp.ble.BleConnectionStatus
@@ -17,7 +21,9 @@ import io.novumd.tvapp.ble.BleSubscriptionStartResult
 import io.novumd.tvapp.ble.BleSubscriptionStatus
 import io.novumd.tvapp.ble.DiscoveredBleDevice
 import io.novumd.tvapp.ble.missingBleScanPermissions
+import io.novumd.tvapp.ble.toDisplayHex
 import io.novumd.tvapp.ble.upsertDiscoveredDevice
+import io.novumd.tvapp.tv.TvCommand
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -214,6 +220,7 @@ class BleScanViewModel(application: Application) : AndroidViewModel(application)
                 onStateChanged = ::onConnectionStateChanged,
                 onServicesChanged = ::onServicesChanged,
                 onSubscriptionChanged = ::onSubscriptionChanged,
+                onCommandWriteChanged = ::onCommandWriteChanged,
                 onNotificationReceived = ::onNotificationReceived,
                 onLog = ::appendLog,
             )
@@ -229,6 +236,9 @@ class BleScanViewModel(application: Application) : AndroidViewModel(application)
                     subscriptionStatus = BleSubscriptionStatus.Idle,
                     subscriptionMessage = "No active notification subscription.",
                     activeSubscription = null,
+                    commandWriteStatus = BleCommandWriteStatus.Idle,
+                    commandWriteMessage = "No command writes queued.",
+                    commandWriteQueueDepth = 0,
                     lastNotification = null,
                 )
             }
@@ -494,6 +504,78 @@ class BleScanViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun writeCommand(
+        serviceUuid: String,
+        characteristicUuid: String,
+        writeType: BleCharacteristicWriteType,
+        command: TvCommand,
+    ) {
+        val payload = command.payload()
+        val request = BleCommandWriteRequest(
+            serviceUuid = serviceUuid,
+            characteristicUuid = characteristicUuid,
+            writeType = writeType,
+            commandName = command.displayName,
+            payload = payload,
+        )
+        when (
+            val result = connectionManager.enqueueCommandWrite(
+                request = request,
+                onCommandWriteChanged = ::onCommandWriteChanged,
+                onLog = ::appendLog,
+            )
+        ) {
+            BleCommandWriteStartResult.Enqueued -> Unit
+            BleCommandWriteStartResult.CharacteristicUnavailable -> reportCommandWriteBlocked(
+                request = request,
+                gattStatus = "characteristicUnavailable",
+                message = "Characteristic is unavailable.",
+            )
+
+            BleCommandWriteStartResult.NoActiveGatt -> reportCommandWriteBlocked(
+                request = request,
+                gattStatus = "noActiveGatt",
+                message = "No active GATT connection.",
+            )
+
+            is BleCommandWriteStartResult.NotConnected -> reportCommandWriteBlocked(
+                request = request,
+                gattStatus = "notConnected",
+                message = "GATT is not connected: ${result.status.name}.",
+            )
+
+            BleCommandWriteStartResult.OperationActive -> reportCommandWriteBlocked(
+                request = request,
+                gattStatus = "operationActive",
+                message = "Another GATT operation is active.",
+            )
+
+            is BleCommandWriteStartResult.PermissionMissing -> {
+                _uiState.update {
+                    it.copy(
+                        missingPermissions = result.missingPermissions,
+                        commandWriteStatus = BleCommandWriteStatus.Failed,
+                        commandWriteMessage = "BLE connect permission is required.",
+                    )
+                }
+                appendLog(
+                    commandWriteScreenLog(
+                        request = request,
+                        gattStatus = "permissionDenied",
+                        connectionState = "blocked",
+                        message = "Command write blocked by missing permission",
+                    ),
+                )
+            }
+
+            BleCommandWriteStartResult.UnsupportedProperty -> reportCommandWriteBlocked(
+                request = request,
+                gattStatus = "unsupportedProperty",
+                message = "Characteristic does not support ${writeType.name.lowercase()} write.",
+            )
+        }
+    }
+
     fun onPermissionResult() {
         refreshEnvironmentState()
         appendLog(
@@ -577,6 +659,21 @@ class BleScanViewModel(application: Application) : AndroidViewModel(application)
                 } else {
                     it.activeSubscription
                 },
+                commandWriteStatus = if (shouldClearServices) {
+                    BleCommandWriteStatus.Idle
+                } else {
+                    it.commandWriteStatus
+                },
+                commandWriteMessage = if (shouldClearServices) {
+                    "No command writes queued."
+                } else {
+                    it.commandWriteMessage
+                },
+                commandWriteQueueDepth = if (shouldClearServices) {
+                    0
+                } else {
+                    it.commandWriteQueueDepth
+                },
             )
         }
     }
@@ -615,6 +712,20 @@ class BleScanViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    private fun onCommandWriteChanged(
+        status: BleCommandWriteStatus,
+        message: String,
+        queueDepth: Int,
+    ) {
+        _uiState.update {
+            it.copy(
+                commandWriteStatus = status,
+                commandWriteMessage = message,
+                commandWriteQueueDepth = queueDepth,
+            )
+        }
+    }
+
     private fun reportSubscriptionStartBlocked(
         subscription: BleCharacteristicSubscription?,
         gattStatus: String,
@@ -631,6 +742,27 @@ class BleScanViewModel(application: Application) : AndroidViewModel(application)
                 gattStatus = gattStatus,
                 connectionState = uiState.value.connectionStatus.name,
                 subscription = subscription,
+                message = message,
+            ),
+        )
+    }
+
+    private fun reportCommandWriteBlocked(
+        request: BleCommandWriteRequest,
+        gattStatus: String,
+        message: String,
+    ) {
+        _uiState.update {
+            it.copy(
+                commandWriteStatus = BleCommandWriteStatus.Failed,
+                commandWriteMessage = message,
+            )
+        }
+        appendLog(
+            commandWriteScreenLog(
+                request = request,
+                gattStatus = gattStatus,
+                connectionState = uiState.value.connectionStatus.name,
                 message = message,
             ),
         )
@@ -693,5 +825,25 @@ private fun subscriptionScreenLog(
         targetDevice = "active",
         characteristicUuid = subscription?.characteristicUuid ?: "N/A",
         message = message,
+    )
+}
+
+private fun commandWriteScreenLog(
+    request: BleCommandWriteRequest,
+    gattStatus: String,
+    connectionState: String,
+    message: String,
+): BleLogEntry {
+    return BleLogEntry(
+        timestampMillis = System.currentTimeMillis(),
+        threadName = Thread.currentThread().name,
+        callbackName = "BleScanViewModel",
+        gattStatus = gattStatus,
+        connectionState = connectionState,
+        operationType = "write",
+        targetDevice = "active",
+        characteristicUuid = request.characteristicUuid,
+        message = "$message command=${request.commandName} type=${request.writeType.name} " +
+            "bytes=${request.payload.size} value=${request.payload.toDisplayHex()}",
     )
 }

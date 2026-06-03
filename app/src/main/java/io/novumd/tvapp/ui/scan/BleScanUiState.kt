@@ -1,6 +1,7 @@
 package io.novumd.tvapp.ui.scan
 
 import io.novumd.tvapp.ble.BleCharacteristicSubscription
+import io.novumd.tvapp.ble.BleCommandWriteStatus
 import io.novumd.tvapp.ble.BleConnectionStatus
 import io.novumd.tvapp.ble.BleGattService
 import io.novumd.tvapp.ble.BleLogEntry
@@ -27,6 +28,9 @@ data class BleScanUiState(
     val subscriptionStatus: BleSubscriptionStatus = BleSubscriptionStatus.Idle,
     val subscriptionMessage: String = "No active notification subscription.",
     val activeSubscription: BleCharacteristicSubscription? = null,
+    val commandWriteStatus: BleCommandWriteStatus = BleCommandWriteStatus.Idle,
+    val commandWriteMessage: String = "No command writes queued.",
+    val commandWriteQueueDepth: Int = 0,
     val lastNotification: BleNotificationEvent? = null,
 )
 

@@ -38,6 +38,19 @@ class BleGattServiceTest {
     }
 
     @Test
+    fun writeTypes_returnsRequestAndCommandWhenSupported() {
+        val characteristic = BleGattCharacteristicInfo(
+            uuid = "00002a19-0000-1000-8000-00805f9b34fb",
+            properties = BluetoothGattCharacteristic.PROPERTY_WRITE or
+                BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE,
+        )
+
+        val writeTypes = characteristic.writeTypes()
+
+        assertEquals(listOf(BleCharacteristicWriteType.Request, BleCharacteristicWriteType.Command), writeTypes)
+    }
+
+    @Test
     fun toDisplayHex_formatsBytesForLogs() {
         val value = byteArrayOf(0x00, 0x0f, 0xff.toByte())
 
