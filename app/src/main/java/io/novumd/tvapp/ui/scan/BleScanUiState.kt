@@ -1,9 +1,12 @@
 package io.novumd.tvapp.ui.scan
 
+import io.novumd.tvapp.ble.BleCharacteristicSubscription
 import io.novumd.tvapp.ble.BleConnectionStatus
 import io.novumd.tvapp.ble.BleGattService
 import io.novumd.tvapp.ble.BleLogEntry
+import io.novumd.tvapp.ble.BleNotificationEvent
 import io.novumd.tvapp.ble.BleServiceDiscoveryStatus
+import io.novumd.tvapp.ble.BleSubscriptionStatus
 import io.novumd.tvapp.ble.DiscoveredBleDevice
 
 private const val MAX_VISIBLE_LOG_ENTRIES = 200
@@ -21,6 +24,10 @@ data class BleScanUiState(
     val serviceDiscoveryStatus: BleServiceDiscoveryStatus = BleServiceDiscoveryStatus.Idle,
     val serviceDiscoveryMessage: String = "No discovered services.",
     val services: List<BleGattService> = emptyList(),
+    val subscriptionStatus: BleSubscriptionStatus = BleSubscriptionStatus.Idle,
+    val subscriptionMessage: String = "No active notification subscription.",
+    val activeSubscription: BleCharacteristicSubscription? = null,
+    val lastNotification: BleNotificationEvent? = null,
 )
 
 enum class BleScanStatus {
