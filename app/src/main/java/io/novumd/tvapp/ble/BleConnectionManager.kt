@@ -408,6 +408,7 @@ class BleConnectionManager(
             }
         }
 
+        // サービス探索
         override fun onServicesDiscovered(
             gatt: BluetoothGatt,
             gattStatus: Int,
@@ -453,15 +454,20 @@ class BleConnectionManager(
             }
         }
 
+        // CCCD書き込み結果を受け取る
         override fun onDescriptorWrite(
             gatt: BluetoothGatt,
             descriptor: BluetoothGattDescriptor,
             gattStatus: Int,
         ) {
+            // 待っていたCCCD書き込み結果かチェック
             val pending = pendingSubscription
             if (
+                // subscribe/unsubscribe操作中でない
                 pending == null ||
+                // 書き込まれたUUIDがCCCDのものではない
                 descriptor.uuid != CLIENT_CHARACTERISTIC_CONFIG_UUID ||
+                // 書き込まれたCCCDがpendingのキャラクタリスティックのものではない
                 descriptor.characteristic.uuid.toString() != pending.subscription.characteristicUuid
             ) {
                 onLog(
@@ -479,11 +485,14 @@ class BleConnectionManager(
                 return
             }
 
+            // タイムアウトを解除
             subscriptionTimeout?.let(handler::removeCallbacks)
             subscriptionTimeout = null
             pendingSubscription = null
 
+            // 書き込み結果が成功か確認
             val success = gattStatus == BluetoothGatt.GATT_SUCCESS
+
             val nextStatus = when {
                 success && pending.enable -> BleSubscriptionStatus.Subscribed
                 success -> BleSubscriptionStatus.Idle
@@ -493,11 +502,14 @@ class BleConnectionManager(
                 success && pending.enable -> pending.subscription
                 success -> null
                 pending.enable -> null
+                // unsubscribe失敗時は、Peripheral側でCCCDが有効（Notify/Indicate有効）である可能性があるため、購読を継続
                 else -> activeSubscription
             }
+
             if (success) {
                 activeSubscription = nextSubscription
             } else if (pending.enable) {
+                // subscribe失敗時、Central側のCCCD受け取り設定をOFF
                 setCharacteristicNotification(
                     gatt = gatt,
                     characteristic = pending.characteristic,
@@ -1031,17 +1043,40 @@ sealed interface BleConnectionStartResult {
 }
 
 sealed interface BleSubscriptionStartResult {
+    // 購読に成功
     data object Started : BleSubscriptionStartResult
+
+    // 接続済みのBluetoothGattがない
     data object NoActiveGatt : BleSubscriptionStartResult
+
+    // 解除対象の購読がない
     data object NoActiveSubscription : BleSubscriptionStartResult
+
+    // GATTはあるが、接続状態がConnectedではない
     data class NotConnected(val status: BleConnectionStatus) : BleSubscriptionStartResult
+
+    // すでにsubscribe/unsubscribe操作中
     data object OperationActive : BleSubscriptionStartResult
+
+    // 指定されたCharacteristicが見つからない
     data object CharacteristicUnavailable : BleSubscriptionStartResult
+
+    // そのCharacteristicは指定modeをサポートしていない
     data object UnsupportedProperty : BleSubscriptionStartResult
+
+    // CharacteristicにCCCDがないのでsubscribeできない
     data object CccdUnavailable : BleSubscriptionStartResult
+
+    // setCharacteristicNotification(characteristic, true) が false を返した
     data object LocalNotificationFailed : BleSubscriptionStartResult
+
+    // Descriptorの書き込みが開始されなかった
     data object DescriptorWriteNotStarted : BleSubscriptionStartResult
+
+    // BLUETOOTH_CONNECT権限がないのでsubscribeできない
     data class PermissionMissing(val missingPermissions: List<String>) : BleSubscriptionStartResult
+
+    // descriptor write開始時に例外やエラーが起きた
     data class Error(val message: String) : BleSubscriptionStartResult
 }
 
@@ -1144,6 +1179,7 @@ private fun setCharacteristicNotification(
     enable: Boolean,
     onLog: (BleLogEntry) -> Unit,
 ): Boolean {
+    // Central側のCCCD受け取り設定 ON/OFF
     val started = gatt.setCharacteristicNotification(characteristic, enable)
     onLog(
         connectionLog(
@@ -1167,10 +1203,13 @@ private fun writeDescriptor(
     descriptor: BluetoothGattDescriptor,
     value: ByteArray,
 ): Boolean {
+    // CCCD書き込み要求開始
     return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         gatt.writeDescriptor(descriptor, value) == BluetoothStatusCodes.SUCCESS
     } else {
+        // 32以下では、CCCDへの書き込み内容をプロパティ指定しないといけない
         descriptor.value = value
+        // 開始結果も成功（true）または失敗（false）のみ
         gatt.writeDescriptor(descriptor)
     }
 }

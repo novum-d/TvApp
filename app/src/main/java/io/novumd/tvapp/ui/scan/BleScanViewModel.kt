@@ -343,6 +343,7 @@ class BleScanViewModel(application: Application) : AndroidViewModel(application)
                 onLog = ::appendLog,
             )
         ) {
+            // 購読に成功した場合は、後続のコールバックにより処理されるので何もしない
             BleSubscriptionStartResult.Started -> Unit
             BleSubscriptionStartResult.CccdUnavailable -> reportSubscriptionStartBlocked(
                 subscription = subscription,
