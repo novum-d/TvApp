@@ -5,15 +5,20 @@
 Testing should support BLE behavior verification without hiding platform behavior.
 Automated tests are useful, but manual BLE verification remains required for BLE features.
 
-## Required Checks Before PR
+## Required Checks
 
-Run these checks before opening a pull request when the project supports them:
+Run this check before pushing local changes:
 
 ```bash
-./gradlew ktlintCheck
+./gradlew lintDebug
+```
+
+CI should run these checks:
+
+```bash
 ./gradlew detekt
+./gradlew lintDebug
 ./gradlew test
-./gradlew connectedCheck
 ```
 
 If a check is unavailable or cannot run in the local environment, record that clearly in

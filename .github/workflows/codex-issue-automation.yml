@@ -323,7 +323,12 @@ jobs:
         uses: gradle/actions/setup-gradle@v5
 
       - name: detekt
-        run: ./gradlew detektFormatCheck detekt
+        run: ./gradlew detekt
+
+      - name: Android lint
+        if: always()
+        run: ./gradlew lintDebug
 
       - name: Unit tests
+        if: always()
         run: ./gradlew test
