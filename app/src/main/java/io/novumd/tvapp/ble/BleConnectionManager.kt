@@ -21,7 +21,7 @@ private const val SUBSCRIPTION_TIMEOUT_MILLIS = 10_000L
 private val CLIENT_CHARACTERISTIC_CONFIG_UUID: UUID =
     UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
-@Suppress("DEPRECATION", "LongMethod", "ReturnCount", "TooManyFunctions")
+@Suppress("DEPRECATION", "LargeClass", "LongMethod", "ReturnCount", "TooManyFunctions")
 class BleConnectionManager(
     private val context: Context,
     private val now: () -> Long = { System.currentTimeMillis() },
@@ -1124,8 +1124,8 @@ private fun parseUuid(uuid: String): UUID? {
 
 private fun BluetoothGattCharacteristic.supports(mode: BleSubscriptionMode): Boolean {
     return when (mode) {
-        BleSubscriptionMode.Notification -> properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0
-        BleSubscriptionMode.Indication -> properties and BluetoothGattCharacteristic.PROPERTY_INDICATE != 0
+        BleSubscriptionMode.Notification -> properties hasProperty BluetoothGattCharacteristic.PROPERTY_NOTIFY
+        BleSubscriptionMode.Indication -> properties hasProperty BluetoothGattCharacteristic.PROPERTY_INDICATE
     }
 }
 

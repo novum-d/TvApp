@@ -59,13 +59,11 @@ fun BleGattCharacteristicInfo.subscriptionModes(): List<BleSubscriptionMode> {
     return modes
 }
 
-fun BleGattCharacteristicInfo.supportsNotification(): Boolean {
-    return properties hasProperty BluetoothGattCharacteristic.PROPERTY_NOTIFY
-}
+fun BleGattCharacteristicInfo.supportsNotification(): Boolean =
+    properties hasProperty BluetoothGattCharacteristic.PROPERTY_NOTIFY
 
-fun BleGattCharacteristicInfo.supportsIndication(): Boolean {
-    return properties hasProperty BluetoothGattCharacteristic.PROPERTY_INDICATE
-}
+fun BleGattCharacteristicInfo.supportsIndication(): Boolean =
+    properties hasProperty BluetoothGattCharacteristic.PROPERTY_INDICATE
 
 fun characteristicPropertyLabels(properties: Int): List<String> {
     val labels = mutableListOf<String>()
@@ -106,4 +104,4 @@ fun ByteArray.toDisplayHex(): String {
     }
 }
 
-private infix fun Int.hasProperty(property: Int): Boolean = this and property != 0
+infix fun Int.hasProperty(property: Int): Boolean = this and property != 0

@@ -1,3 +1,5 @@
+@file:Suppress("TooManyFunctions")
+
 package io.novumd.tvapp.ui.scan
 
 import android.bluetooth.BluetoothGattCharacteristic
@@ -45,18 +47,22 @@ private val DeviceListHeight = 360.dp
 private val ServiceListHeight = 280.dp
 private val LogListHeight = 96.dp
 
+data class BleScanScreenActions(
+    val onStartScan: () -> Unit,
+    val onStopScan: () -> Unit,
+    val onConnectDevice: (DiscoveredBleDevice) -> Unit,
+    val onDisconnectDevice: () -> Unit,
+    val onSubscribe: (String, String, BleSubscriptionMode) -> Unit,
+    val onUnsubscribe: () -> Unit,
+    val onDeviceNameFilterChange: (String) -> Unit,
+    val onClearLogs: () -> Unit,
+    val onRequestPermissions: () -> Unit,
+)
+
 @Composable
 fun BleScanScreen(
     uiState: BleScanUiState,
-    onStartScan: () -> Unit,
-    onStopScan: () -> Unit,
-    onConnectDevice: (DiscoveredBleDevice) -> Unit,
-    onDisconnectDevice: () -> Unit,
-    onSubscribe: (String, String, BleSubscriptionMode) -> Unit,
-    onUnsubscribe: () -> Unit,
-    onDeviceNameFilterChange: (String) -> Unit,
-    onClearLogs: () -> Unit,
-    onRequestPermissions: () -> Unit,
+    actions: BleScanScreenActions,
     modifier: Modifier = Modifier,
 ) {
     val filteredDevices = filterDevicesByName(
@@ -73,9 +79,9 @@ fun BleScanScreen(
         item(key = "scan_header") {
             ScanHeader(
                 uiState = uiState,
-                onStartScan = onStartScan,
-                onStopScan = onStopScan,
-                onRequestPermissions = onRequestPermissions,
+                onStartScan = actions.onStartScan,
+                onStopScan = actions.onStopScan,
+                onRequestPermissions = actions.onRequestPermissions,
             )
         }
 
@@ -93,7 +99,7 @@ fun BleScanScreen(
         item(key = "device_filter") {
             OutlinedTextField(
                 value = uiState.deviceNameFilterQuery,
-                onValueChange = onDeviceNameFilterChange,
+                onValueChange = actions.onDeviceNameFilterChange,
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 label = {
@@ -110,8 +116,8 @@ fun BleScanScreen(
                 connectionStatus = uiState.connectionStatus,
                 connectionMessage = uiState.connectionMessage,
                 subscriptionStatus = uiState.subscriptionStatus,
-                onConnectDevice = onConnectDevice,
-                onDisconnectDevice = onDisconnectDevice,
+                onConnectDevice = actions.onConnectDevice,
+                onDisconnectDevice = actions.onDisconnectDevice,
             )
         }
 
@@ -122,8 +128,8 @@ fun BleScanScreen(
         item(key = "service_panel") {
             ServiceDiscoveryPanel(
                 uiState = uiState,
-                onSubscribe = onSubscribe,
-                onUnsubscribe = onUnsubscribe,
+                onSubscribe = actions.onSubscribe,
+                onUnsubscribe = actions.onUnsubscribe,
             )
         }
 
@@ -134,7 +140,7 @@ fun BleScanScreen(
         item(key = "log_header") {
             LogHeader(
                 hasLogs = uiState.logs.isNotEmpty(),
-                onClearLogs = onClearLogs,
+                onClearLogs = actions.onClearLogs,
             )
         }
         item(key = "log_list") {
@@ -584,56 +590,47 @@ private fun BleScanScreenPreview() {
                     ),
                 ),
             ),
-            onStartScan = {},
-            onStopScan = {},
-            onConnectDevice = {},
-            onDisconnectDevice = {},
-            onSubscribe = { _, _, _ -> },
-            onUnsubscribe = {},
-            onDeviceNameFilterChange = {},
-            onClearLogs = {},
-            onRequestPermissions = {},
+            actions = BleScanScreenActions(
+                onStartScan = {},
+                onStopScan = {},
+                onConnectDevice = {},
+                onDisconnectDevice = {},
+                onSubscribe = { _, _, _ -> },
+                onUnsubscribe = {},
+                onDeviceNameFilterChange = {},
+                onClearLogs = {},
+                onRequestPermissions = {},
+            ),
         )
     }
 }
 
-private fun BleConnectionStatus.canStartConnect(): Boolean {
-    return when (this) {
-        BleConnectionStatus.Connecting,
-        BleConnectionStatus.Connected,
-        BleConnectionStatus.Disconnecting,
-        -> false
+private fun BleConnectionStatus.canStartConnect(): Boolean = when (this) {
+    BleConnectionStatus.Connecting,
+    BleConnectionStatus.Connected,
+    BleConnectionStatus.Disconnecting,
+    -> false
 
-        BleConnectionStatus.Disconnected,
-        BleConnectionStatus.Failed,
-        -> true
-    }
+    BleConnectionStatus.Disconnected,
+    BleConnectionStatus.Failed,
+    -> true
 }
 
-private fun BleConnectionStatus.canDisconnect(isSelected: Boolean): Boolean {
-    return isSelected &&
-        (this == BleConnectionStatus.Connecting || this == BleConnectionStatus.Connected)
+private fun BleConnectionStatus.canDisconnect(isSelected: Boolean): Boolean = isSelected &&
+    (this == BleConnectionStatus.Connecting || this == BleConnectionStatus.Connected)
+
+private fun BleSubscriptionStatus.canStartSubscription(): Boolean =
+    this == BleSubscriptionStatus.Idle || this == BleSubscriptionStatus.Failed
+
+private fun BleSubscriptionStatus.canRunGattOperation(): Boolean =
+    this != BleSubscriptionStatus.Subscribing && this != BleSubscriptionStatus.Unsubscribing
+
+private fun BleSubscriptionStatus.canStopSubscription(): Boolean =
+    this == BleSubscriptionStatus.Subscribed || this == BleSubscriptionStatus.Failed
+
+private fun BleSubscriptionMode.actionLabel(): String = when (this) {
+    BleSubscriptionMode.Notification -> "Notify"
+    BleSubscriptionMode.Indication -> "Indicate"
 }
 
-private fun BleSubscriptionStatus.canStartSubscription(): Boolean {
-    return this == BleSubscriptionStatus.Idle || this == BleSubscriptionStatus.Failed
-}
-
-private fun BleSubscriptionStatus.canRunGattOperation(): Boolean {
-    return this != BleSubscriptionStatus.Subscribing && this != BleSubscriptionStatus.Unsubscribing
-}
-
-private fun BleSubscriptionStatus.canStopSubscription(): Boolean {
-    return this == BleSubscriptionStatus.Subscribed || this == BleSubscriptionStatus.Failed
-}
-
-private fun BleSubscriptionMode.actionLabel(): String {
-    return when (this) {
-        BleSubscriptionMode.Notification -> "Notify"
-        BleSubscriptionMode.Indication -> "Indicate"
-    }
-}
-
-private fun Long.formatLogTimestamp(): String {
-    return SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date(this))
-}
+private fun Long.formatLogTimestamp(): String = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date(this))
