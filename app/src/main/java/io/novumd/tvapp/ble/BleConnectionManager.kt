@@ -141,7 +141,7 @@ class BleConnectionManager(
             return BleSubscriptionStartResult.PermissionMissing(missingPermissions)
         }
 
-        if (hasPendingGattOperation()) {
+        if (hasActiveGattOperation() || hasQueuedCommandWrites()) {
             return BleSubscriptionStartResult.OperationActive
         }
 
@@ -203,7 +203,7 @@ class BleConnectionManager(
             return BleSubscriptionStartResult.PermissionMissing(missingPermissions)
         }
 
-        if (hasPendingGattOperation()) {
+        if (hasActiveGattOperation() || hasQueuedCommandWrites()) {
             return BleSubscriptionStartResult.OperationActive
         }
 
@@ -297,7 +297,7 @@ class BleConnectionManager(
         onStateChanged: (BleConnectionStatus, String) -> Unit,
         onLog: (BleLogEntry) -> Unit,
     ) {
-        if (hasPendingGattOperation()) {
+        if (hasActiveGattOperation() || hasQueuedCommandWrites()) {
             onLog(
                 connectionLog(
                     timestampMillis = now(),
@@ -925,7 +925,7 @@ class BleConnectionManager(
         onCommandWriteChanged: (BleCommandWriteStatus, String, Int) -> Unit,
         onLog: (BleLogEntry) -> Unit,
     ) {
-        if (activeCommandWrite != null || pendingSubscription != null || pendingCommandWrites.isEmpty()) {
+        if (hasActiveGattOperation() || !hasQueuedCommandWrites()) {
             return
         }
 
@@ -1244,12 +1244,19 @@ class BleConnectionManager(
     }
 
     private fun commandWriteQueueDepth(): Int {
-        val activeCount = if (activeCommandWrite == null) 0 else 1
-        return activeCount + pendingCommandWrites.size
+        val inFlightWriteCount = if (activeCommandWrite != null) 1 else 0
+        return inFlightWriteCount + pendingCommandWrites.size
     }
 
-    private fun hasPendingGattOperation(): Boolean =
-        pendingSubscription != null || activeCommandWrite != null || pendingCommandWrites.isNotEmpty()
+    // すでにCommand Write中 または Notify/IndicateのSubscribe/Unsubscribe中
+    private fun hasActiveGattOperation(): Boolean =
+        pendingSubscription != null ||
+                activeCommandWrite != null
+
+
+    // キューにコマンドがある
+    private fun hasQueuedCommandWrites(): Boolean =
+        pendingCommandWrites.isNotEmpty()
 
     private fun failSubscriptionStart(
         gatt: BluetoothGatt,
