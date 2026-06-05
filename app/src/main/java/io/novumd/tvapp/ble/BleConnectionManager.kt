@@ -1,3 +1,5 @@
+@file:Suppress("TooManyFunctions")
+
 package io.novumd.tvapp.ble
 
 import android.annotation.SuppressLint
@@ -22,7 +24,7 @@ private const val COMMAND_WRITE_TIMEOUT_MILLIS = 10_000L
 private val CLIENT_CHARACTERISTIC_CONFIG_UUID: UUID =
     UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
-@Suppress("DEPRECATION", "LargeClass", "LongMethod", "ReturnCount", "TooManyFunctions")
+@Suppress("DEPRECATION", "LargeClass", "LongMethod", "ReturnCount")
 class BleConnectionManager(
     private val context: Context,
     private val now: () -> Long = { System.currentTimeMillis() },
@@ -1249,14 +1251,10 @@ class BleConnectionManager(
     }
 
     // すでにCommand Write中 または Notify/IndicateのSubscribe/Unsubscribe中
-    private fun hasActiveGattOperation(): Boolean =
-        pendingSubscription != null ||
-                activeCommandWrite != null
-
+    private fun hasActiveGattOperation(): Boolean = pendingSubscription != null || activeCommandWrite != null
 
     // キューにコマンドがある
-    private fun hasQueuedCommandWrites(): Boolean =
-        pendingCommandWrites.isNotEmpty()
+    private fun hasQueuedCommandWrites(): Boolean = pendingCommandWrites.isNotEmpty()
 
     private fun failSubscriptionStart(
         gatt: BluetoothGatt,

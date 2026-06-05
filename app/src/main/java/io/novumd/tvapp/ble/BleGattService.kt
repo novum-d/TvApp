@@ -1,3 +1,5 @@
+@file:Suppress("TooManyFunctions")
+
 package io.novumd.tvapp.ble
 
 import android.bluetooth.BluetoothGattCharacteristic

@@ -29,7 +29,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 
-@Suppress("TooManyFunctions")
+@Suppress("LargeClass", "TooManyFunctions")
 class BleScanViewModel(application: Application) : AndroidViewModel(application) {
     private val scanner = BleScanner(application.applicationContext)
     private val connectionManager = BleConnectionManager(application.applicationContext)
