@@ -3,6 +3,10 @@ package io.novumd.tvapp.ui.scan
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import io.novumd.tvapp.ble.BleCharacteristicSubscription
+import io.novumd.tvapp.ble.BleCharacteristicReadRequest
+import io.novumd.tvapp.ble.BleCharacteristicReadResult
+import io.novumd.tvapp.ble.BleCharacteristicReadStartResult
+import io.novumd.tvapp.ble.BleCharacteristicReadStatus
 import io.novumd.tvapp.ble.BleCharacteristicWriteType
 import io.novumd.tvapp.ble.BleCommandWriteRequest
 import io.novumd.tvapp.ble.BleCommandWriteStartResult
@@ -219,6 +223,7 @@ class BleScanViewModel(application: Application) : AndroidViewModel(application)
                 device = device,
                 onStateChanged = ::onConnectionStateChanged,
                 onServicesChanged = ::onServicesChanged,
+                onCharacteristicReadChanged = ::onCharacteristicReadChanged,
                 onSubscriptionChanged = ::onSubscriptionChanged,
                 onCommandWriteChanged = ::onCommandWriteChanged,
                 onNotificationReceived = ::onNotificationReceived,
@@ -233,6 +238,9 @@ class BleScanViewModel(application: Application) : AndroidViewModel(application)
                     serviceDiscoveryStatus = BleServiceDiscoveryStatus.Idle,
                     serviceDiscoveryMessage = "No discovered services.",
                     services = emptyList(),
+                    characteristicReadStatus = BleCharacteristicReadStatus.Idle,
+                    characteristicReadMessage = "No characteristic reads queued.",
+                    lastCharacteristicRead = null,
                     subscriptionStatus = BleSubscriptionStatus.Idle,
                     subscriptionMessage = "No active notification subscription.",
                     activeSubscription = null,
@@ -336,6 +344,66 @@ class BleScanViewModel(application: Application) : AndroidViewModel(application)
         )
     }
 
+    fun readCharacteristic(
+        serviceUuid: String,
+        characteristicUuid: String,
+    ) {
+        val request = BleCharacteristicReadRequest(
+            serviceUuid = serviceUuid,
+            characteristicUuid = characteristicUuid,
+        )
+        when (
+            val result = connectionManager.enqueueCharacteristicRead(
+                request = request,
+                onCharacteristicReadChanged = ::onCharacteristicReadChanged,
+                onLog = ::appendLog,
+            )
+        ) {
+            BleCharacteristicReadStartResult.Enqueued -> Unit
+            BleCharacteristicReadStartResult.CharacteristicUnavailable -> reportCharacteristicReadBlocked(
+                request = request,
+                gattStatus = "characteristicUnavailable",
+                message = "Characteristic is unavailable.",
+            )
+
+            BleCharacteristicReadStartResult.NoActiveGatt -> reportCharacteristicReadBlocked(
+                request = request,
+                gattStatus = "noActiveGatt",
+                message = "No active GATT connection.",
+            )
+
+            is BleCharacteristicReadStartResult.NotConnected -> reportCharacteristicReadBlocked(
+                request = request,
+                gattStatus = "notConnected",
+                message = "GATT is not connected: ${result.status.name}.",
+            )
+
+            is BleCharacteristicReadStartResult.PermissionMissing -> {
+                _uiState.update {
+                    it.copy(
+                        missingPermissions = result.missingPermissions,
+                        characteristicReadStatus = BleCharacteristicReadStatus.Failed,
+                        characteristicReadMessage = "BLE connect permission is required.",
+                    )
+                }
+                appendLog(
+                    characteristicReadScreenLog(
+                        request = request,
+                        gattStatus = "permissionDenied",
+                        connectionState = "blocked",
+                        message = "Characteristic read blocked by missing permission",
+                    ),
+                )
+            }
+
+            BleCharacteristicReadStartResult.UnsupportedProperty -> reportCharacteristicReadBlocked(
+                request = request,
+                gattStatus = "unsupportedProperty",
+                message = "Characteristic does not support read.",
+            )
+        }
+    }
+
     fun subscribe(
         serviceUuid: String,
         characteristicUuid: String,
@@ -353,6 +421,7 @@ class BleScanViewModel(application: Application) : AndroidViewModel(application)
                 onLog = ::appendLog,
             )
         ) {
+            BleSubscriptionStartResult.Enqueued -> Unit
             // 購読に成功した場合は、後続のコールバックにより処理されるので何もしない
             BleSubscriptionStartResult.Started -> Unit
             BleSubscriptionStartResult.CccdUnavailable -> reportSubscriptionStartBlocked(
@@ -433,6 +502,7 @@ class BleScanViewModel(application: Application) : AndroidViewModel(application)
                 onLog = ::appendLog,
             )
         ) {
+            BleSubscriptionStartResult.Enqueued -> Unit
             BleSubscriptionStartResult.Started -> Unit
             BleSubscriptionStartResult.CccdUnavailable -> reportSubscriptionStartBlocked(
                 subscription = currentSubscription,
@@ -644,6 +714,21 @@ class BleScanViewModel(application: Application) : AndroidViewModel(application)
                 } else {
                     it.services
                 },
+                characteristicReadStatus = if (shouldClearServices) {
+                    BleCharacteristicReadStatus.Idle
+                } else {
+                    it.characteristicReadStatus
+                },
+                characteristicReadMessage = if (shouldClearServices) {
+                    "No characteristic reads queued."
+                } else {
+                    it.characteristicReadMessage
+                },
+                lastCharacteristicRead = if (shouldClearServices) {
+                    null
+                } else {
+                    it.lastCharacteristicRead
+                },
                 subscriptionStatus = if (shouldClearServices) {
                     BleSubscriptionStatus.Idle
                 } else {
@@ -688,6 +773,20 @@ class BleScanViewModel(application: Application) : AndroidViewModel(application)
                 serviceDiscoveryStatus = status,
                 serviceDiscoveryMessage = message,
                 services = services,
+            )
+        }
+    }
+
+    private fun onCharacteristicReadChanged(
+        status: BleCharacteristicReadStatus,
+        result: BleCharacteristicReadResult?,
+        message: String,
+    ) {
+        _uiState.update {
+            it.copy(
+                characteristicReadStatus = status,
+                characteristicReadMessage = message,
+                lastCharacteristicRead = result ?: it.lastCharacteristicRead,
             )
         }
     }
@@ -742,6 +841,27 @@ class BleScanViewModel(application: Application) : AndroidViewModel(application)
                 gattStatus = gattStatus,
                 connectionState = uiState.value.connectionStatus.name,
                 subscription = subscription,
+                message = message,
+            ),
+        )
+    }
+
+    private fun reportCharacteristicReadBlocked(
+        request: BleCharacteristicReadRequest,
+        gattStatus: String,
+        message: String,
+    ) {
+        _uiState.update {
+            it.copy(
+                characteristicReadStatus = BleCharacteristicReadStatus.Failed,
+                characteristicReadMessage = message,
+            )
+        }
+        appendLog(
+            characteristicReadScreenLog(
+                request = request,
+                gattStatus = gattStatus,
+                connectionState = uiState.value.connectionStatus.name,
                 message = message,
             ),
         )
@@ -824,6 +944,25 @@ private fun subscriptionScreenLog(
         operationType = "subscribe",
         targetDevice = "active",
         characteristicUuid = subscription?.characteristicUuid ?: "N/A",
+        message = message,
+    )
+}
+
+private fun characteristicReadScreenLog(
+    request: BleCharacteristicReadRequest,
+    gattStatus: String,
+    connectionState: String,
+    message: String,
+): BleLogEntry {
+    return BleLogEntry(
+        timestampMillis = System.currentTimeMillis(),
+        threadName = Thread.currentThread().name,
+        callbackName = "BleScanViewModel",
+        gattStatus = gattStatus,
+        connectionState = connectionState,
+        operationType = "read",
+        targetDevice = "active",
+        characteristicUuid = request.characteristicUuid,
         message = message,
     )
 }

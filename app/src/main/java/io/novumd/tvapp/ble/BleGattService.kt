@@ -31,6 +31,20 @@ data class BleNotificationEvent(
     val byteCount: Int,
 )
 
+data class BleCharacteristicReadRequest(
+    val serviceUuid: String,
+    val characteristicUuid: String,
+)
+
+data class BleCharacteristicReadResult(
+    val timestampMillis: Long,
+    val targetDevice: String,
+    val serviceUuid: String,
+    val characteristicUuid: String,
+    val valueHex: String,
+    val byteCount: Int,
+)
+
 class BleCommandWriteRequest(
     val serviceUuid: String,
     val characteristicUuid: String,
@@ -79,6 +93,9 @@ fun BleGattCharacteristicInfo.supportsNotification(): Boolean =
 
 fun BleGattCharacteristicInfo.supportsIndication(): Boolean =
     properties hasProperty BluetoothGattCharacteristic.PROPERTY_INDICATE
+
+fun BleGattCharacteristicInfo.supportsRead(): Boolean =
+    properties hasProperty BluetoothGattCharacteristic.PROPERTY_READ
 
 fun BleGattCharacteristicInfo.writeTypes(): List<BleCharacteristicWriteType> {
     val writeTypes = mutableListOf<BleCharacteristicWriteType>()
