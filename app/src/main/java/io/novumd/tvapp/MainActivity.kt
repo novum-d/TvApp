@@ -63,6 +63,7 @@ class MainActivity : ComponentActivity() {
                             onDisconnectDevice = viewModel::disconnect,
                             onSubscribe = viewModel::subscribe,
                             onUnsubscribe = viewModel::unsubscribe,
+                            onWriteCommand = viewModel::writeCommand,
                             onDeviceNameFilterChange = viewModel::updateDeviceNameFilter,
                             onClearLogs = viewModel::clearLogs,
                             onRequestPermissions = {

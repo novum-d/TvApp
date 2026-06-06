@@ -1,3 +1,5 @@
+@file:Suppress("TooManyFunctions")
+
 package io.novumd.tvapp.ble
 
 import android.bluetooth.BluetoothGattCharacteristic
@@ -29,9 +31,22 @@ data class BleNotificationEvent(
     val byteCount: Int,
 )
 
+class BleCommandWriteRequest(
+    val serviceUuid: String,
+    val characteristicUuid: String,
+    val writeType: BleCharacteristicWriteType,
+    val commandName: String,
+    val payload: ByteArray,
+)
+
 enum class BleSubscriptionMode {
     Notification,
     Indication,
+}
+
+enum class BleCharacteristicWriteType {
+    Request,
+    Command,
 }
 
 fun BluetoothGattService.toBleGattService(): BleGattService {
@@ -64,6 +79,23 @@ fun BleGattCharacteristicInfo.supportsNotification(): Boolean =
 
 fun BleGattCharacteristicInfo.supportsIndication(): Boolean =
     properties hasProperty BluetoothGattCharacteristic.PROPERTY_INDICATE
+
+fun BleGattCharacteristicInfo.writeTypes(): List<BleCharacteristicWriteType> {
+    val writeTypes = mutableListOf<BleCharacteristicWriteType>()
+    if (supportsWriteRequest()) {
+        writeTypes += BleCharacteristicWriteType.Request
+    }
+    if (supportsWriteCommand()) {
+        writeTypes += BleCharacteristicWriteType.Command
+    }
+    return writeTypes
+}
+
+fun BleGattCharacteristicInfo.supportsWriteRequest(): Boolean =
+    properties hasProperty BluetoothGattCharacteristic.PROPERTY_WRITE
+
+fun BleGattCharacteristicInfo.supportsWriteCommand(): Boolean =
+    properties hasProperty BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE
 
 fun characteristicPropertyLabels(properties: Int): List<String> {
     val labels = mutableListOf<String>()
