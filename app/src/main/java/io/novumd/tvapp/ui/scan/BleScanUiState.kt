@@ -1,6 +1,8 @@
 package io.novumd.tvapp.ui.scan
 
 import io.novumd.tvapp.ble.BleCharacteristicSubscription
+import io.novumd.tvapp.ble.BleCharacteristicReadResult
+import io.novumd.tvapp.ble.BleCharacteristicReadStatus
 import io.novumd.tvapp.ble.BleCommandWriteStatus
 import io.novumd.tvapp.ble.BleConnectionStatus
 import io.novumd.tvapp.ble.BleGattService
@@ -25,6 +27,9 @@ data class BleScanUiState(
     val serviceDiscoveryStatus: BleServiceDiscoveryStatus = BleServiceDiscoveryStatus.Idle,
     val serviceDiscoveryMessage: String = "No discovered services.",
     val services: List<BleGattService> = emptyList(),
+    val characteristicReadStatus: BleCharacteristicReadStatus = BleCharacteristicReadStatus.Idle,
+    val characteristicReadMessage: String = "No characteristic reads queued.",
+    val lastCharacteristicRead: BleCharacteristicReadResult? = null,
     val subscriptionStatus: BleSubscriptionStatus = BleSubscriptionStatus.Idle,
     val subscriptionMessage: String = "No active notification subscription.",
     val activeSubscription: BleCharacteristicSubscription? = null,

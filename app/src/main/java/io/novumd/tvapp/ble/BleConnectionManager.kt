@@ -19,6 +19,7 @@ import java.util.UUID
 private const val CONNECT_TIMEOUT_MILLIS = 15_000L
 private const val DISCONNECT_TIMEOUT_MILLIS = 5_000L
 private const val SERVICE_DISCOVERY_TIMEOUT_MILLIS = 10_000L
+private const val READ_TIMEOUT_MILLIS = 10_000L
 private const val SUBSCRIPTION_TIMEOUT_MILLIS = 10_000L
 private const val COMMAND_WRITE_TIMEOUT_MILLIS = 10_000L
 private val CLIENT_CHARACTERISTIC_CONFIG_UUID: UUID =
@@ -38,18 +39,25 @@ class BleConnectionManager(
     private var connectTimeout: Runnable? = null
     private var disconnectTimeout: Runnable? = null
     private var serviceDiscoveryTimeout: Runnable? = null
+    private var readTimeout: Runnable? = null
     private var subscriptionTimeout: Runnable? = null
     private var commandWriteTimeout: Runnable? = null
+    private val operationQueue = GattOperationQueue()
+    private var nextGattOperationId = 1L
+    private val queuedReads = mutableMapOf<Long, PendingCharacteristicRead>()
+    private val queuedSubscriptions = mutableMapOf<Long, PendingSubscription>()
+    private val queuedCommandWrites = mutableMapOf<Long, PendingCommandWrite>()
+    private var activeRead: PendingCharacteristicRead? = null
     private var pendingSubscription: PendingSubscription? = null
     private var activeSubscription: BleCharacteristicSubscription? = null
     private var activeCommandWrite: PendingCommandWrite? = null
-    private val pendingCommandWrites = mutableListOf<PendingCommandWrite>()
 
     @SuppressLint("MissingPermission")
     fun connect(
         device: DiscoveredBleDevice,
         onStateChanged: (BleConnectionStatus, String) -> Unit,
         onServicesChanged: (BleServiceDiscoveryStatus, List<BleGattService>, String) -> Unit,
+        onCharacteristicReadChanged: (BleCharacteristicReadStatus, BleCharacteristicReadResult?, String) -> Unit,
         onSubscriptionChanged: (BleSubscriptionStatus, BleCharacteristicSubscription?, String) -> Unit,
         onCommandWriteChanged: (BleCommandWriteStatus, String, Int) -> Unit,
         onNotificationReceived: (BleNotificationEvent) -> Unit,
@@ -99,6 +107,7 @@ class BleConnectionManager(
         val callback = connectionCallback(
             onStateChanged,
             onServicesChanged,
+            onCharacteristicReadChanged,
             onSubscriptionChanged,
             onCommandWriteChanged,
             onNotificationReceived,
@@ -133,6 +142,64 @@ class BleConnectionManager(
     }
 
     @SuppressLint("MissingPermission")
+    fun enqueueCharacteristicRead(
+        request: BleCharacteristicReadRequest,
+        onCharacteristicReadChanged: (BleCharacteristicReadStatus, BleCharacteristicReadResult?, String) -> Unit,
+        onLog: (BleLogEntry) -> Unit,
+    ): BleCharacteristicReadStartResult {
+        val missingPermissions = context.missingBleConnectPermissions()
+        if (missingPermissions.isNotEmpty()) {
+            return BleCharacteristicReadStartResult.PermissionMissing(missingPermissions)
+        }
+
+        val gatt = bluetoothGatt ?: return BleCharacteristicReadStartResult.NoActiveGatt
+        if (status != BleConnectionStatus.Connected) {
+            return BleCharacteristicReadStartResult.NotConnected(status)
+        }
+
+        val target = findGattTarget(gatt, request.serviceUuid, request.characteristicUuid)
+            ?: return BleCharacteristicReadStartResult.CharacteristicUnavailable
+        if (!target.characteristic.supportsRead()) {
+            return BleCharacteristicReadStartResult.UnsupportedProperty
+        }
+
+        val operation = nextGattOperation(
+            type = GattOperationType.Read,
+            serviceUuid = request.serviceUuid,
+            characteristicUuid = request.characteristicUuid,
+            label = "read characteristic",
+        )
+        queuedReads[operation.id] = PendingCharacteristicRead(
+            request = request,
+            characteristic = target.characteristic,
+        )
+        val snapshot = operationQueue.enqueue(operation)
+        logQueueState(
+            callbackName = "GattOperationQueue.enqueue",
+            gattStatus = "queued",
+            gatt = gatt,
+            operation = operation,
+            snapshot = snapshot,
+            message = "queued read queueDepth=${snapshot.totalDepth}",
+            onLog = onLog,
+        )
+        onCharacteristicReadChanged(
+            BleCharacteristicReadStatus.Queued,
+            null,
+            "Queued characteristic read. queueDepth=${snapshot.totalDepth}.",
+        )
+        startNextGattOperationIfIdle(
+            gatt = gatt,
+            onServicesChanged = null,
+            onCharacteristicReadChanged = onCharacteristicReadChanged,
+            onSubscriptionChanged = null,
+            onCommandWriteChanged = null,
+            onLog = onLog,
+        )
+        return BleCharacteristicReadStartResult.Enqueued
+    }
+
+    @SuppressLint("MissingPermission")
     fun subscribeToCharacteristic(
         subscription: BleCharacteristicSubscription,
         onSubscriptionChanged: (BleSubscriptionStatus, BleCharacteristicSubscription?, String) -> Unit,
@@ -141,10 +208,6 @@ class BleConnectionManager(
         val missingPermissions = context.missingBleConnectPermissions()
         if (missingPermissions.isNotEmpty()) {
             return BleSubscriptionStartResult.PermissionMissing(missingPermissions)
-        }
-
-        if (hasActiveGattOperation() || hasQueuedCommandWrites()) {
-            return BleSubscriptionStartResult.OperationActive
         }
 
         val gatt = bluetoothGatt ?: return BleSubscriptionStartResult.NoActiveGatt
@@ -161,38 +224,44 @@ class BleConnectionManager(
         val descriptor = target.characteristic.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG_UUID)
             ?: return BleSubscriptionStartResult.CccdUnavailable
 
+        val operation = nextGattOperation(
+            type = GattOperationType.Subscribe,
+            serviceUuid = subscription.serviceUuid,
+            characteristicUuid = subscription.characteristicUuid,
+            label = "subscribe ${subscription.mode.name.lowercase()}",
+        )
         val pending = PendingSubscription(
             subscription = subscription,
             enable = true,
             characteristic = target.characteristic,
             descriptor = descriptor,
+            operationId = operation.id,
         )
-        pendingSubscription = pending
+        queuedSubscriptions[operation.id] = pending
+        val snapshot = operationQueue.enqueue(operation)
         onSubscriptionChanged(
-            BleSubscriptionStatus.Subscribing,
+            BleSubscriptionStatus.Queued,
             subscription,
-            "Subscribing ${subscription.mode.name.lowercase()} for ${subscription.characteristicUuid}.",
+            "Queued ${subscription.mode.name.lowercase()} subscription. queueDepth=${snapshot.totalDepth}.",
         )
-        onLog(
-            connectionLog(
-                timestampMillis = now(),
-                callbackName = "BluetoothGatt.setCharacteristicNotification",
-                connectionState = status.name,
-                operationType = "subscribe",
-                targetDevice = activeDevice?.address ?: gatt.device.address,
-                characteristicUuid = subscription.characteristicUuid,
-                message = "enable local notification requested mode=${subscription.mode.name}",
-            ),
-        )
-
-        return tryStartSubscriptionWrite(
+        logQueueState(
+            callbackName = "GattOperationQueue.enqueue",
+            gattStatus = "queued",
             gatt = gatt,
-            pending = pending,
-            descriptorValue = subscription.mode.enableDescriptorValue(),
-            startFailureSubscription = null,
-            onSubscriptionChanged = onSubscriptionChanged,
+            operation = operation,
+            snapshot = snapshot,
+            message = "queued subscribe mode=${subscription.mode.name} queueDepth=${snapshot.totalDepth}",
             onLog = onLog,
         )
+        startNextGattOperationIfIdle(
+            gatt = gatt,
+            onServicesChanged = null,
+            onCharacteristicReadChanged = null,
+            onSubscriptionChanged = onSubscriptionChanged,
+            onCommandWriteChanged = null,
+            onLog = onLog,
+        )
+        return BleSubscriptionStartResult.Enqueued
     }
 
     @SuppressLint("MissingPermission")
@@ -205,10 +274,6 @@ class BleConnectionManager(
             return BleSubscriptionStartResult.PermissionMissing(missingPermissions)
         }
 
-        if (hasActiveGattOperation() || hasQueuedCommandWrites()) {
-            return BleSubscriptionStartResult.OperationActive
-        }
-
         val subscription = activeSubscription ?: return BleSubscriptionStartResult.NoActiveSubscription
         val gatt = bluetoothGatt ?: return BleSubscriptionStartResult.NoActiveGatt
         if (status != BleConnectionStatus.Connected) {
@@ -219,27 +284,44 @@ class BleConnectionManager(
             ?: return BleSubscriptionStartResult.CharacteristicUnavailable
         val descriptor = target.characteristic.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG_UUID)
             ?: return BleSubscriptionStartResult.CccdUnavailable
+        val operation = nextGattOperation(
+            type = GattOperationType.Unsubscribe,
+            serviceUuid = subscription.serviceUuid,
+            characteristicUuid = subscription.characteristicUuid,
+            label = "unsubscribe",
+        )
         val pending = PendingSubscription(
             subscription = subscription,
             enable = false,
             characteristic = target.characteristic,
             descriptor = descriptor,
+            operationId = operation.id,
         )
-        pendingSubscription = pending
+        queuedSubscriptions[operation.id] = pending
+        val snapshot = operationQueue.enqueue(operation)
         onSubscriptionChanged(
-            BleSubscriptionStatus.Unsubscribing,
+            BleSubscriptionStatus.Queued,
             subscription,
-            "Unsubscribing from ${subscription.characteristicUuid}.",
+            "Queued unsubscribe from ${subscription.characteristicUuid}. queueDepth=${snapshot.totalDepth}.",
         )
-
-        return tryStartSubscriptionWrite(
+        logQueueState(
+            callbackName = "GattOperationQueue.enqueue",
+            gattStatus = "queued",
             gatt = gatt,
-            pending = pending,
-            descriptorValue = BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE,
-            startFailureSubscription = activeSubscription,
-            onSubscriptionChanged = onSubscriptionChanged,
+            operation = operation,
+            snapshot = snapshot,
+            message = "queued unsubscribe queueDepth=${snapshot.totalDepth}",
             onLog = onLog,
         )
+        startNextGattOperationIfIdle(
+            gatt = gatt,
+            onServicesChanged = null,
+            onCharacteristicReadChanged = null,
+            onSubscriptionChanged = onSubscriptionChanged,
+            onCommandWriteChanged = null,
+            onLog = onLog,
+        )
+        return BleSubscriptionStartResult.Enqueued
     }
 
     @SuppressLint("MissingPermission")
@@ -257,9 +339,6 @@ class BleConnectionManager(
         if (status != BleConnectionStatus.Connected) {
             return BleCommandWriteStartResult.NotConnected(status)
         }
-        if (pendingSubscription != null) {
-            return BleCommandWriteStartResult.OperationActive
-        }
 
         val target = findGattTarget(gatt, request.serviceUuid, request.characteristicUuid)
             ?: return BleCommandWriteStartResult.CharacteristicUnavailable
@@ -267,22 +346,33 @@ class BleConnectionManager(
             return BleCommandWriteStartResult.UnsupportedProperty
         }
 
+        val operation = nextGattOperation(
+            type = GattOperationType.Write,
+            serviceUuid = request.serviceUuid,
+            characteristicUuid = request.characteristicUuid,
+            label = request.commandName,
+        )
         val pending = PendingCommandWrite(
             request = request,
             characteristic = target.characteristic,
+            operationId = operation.id,
         )
-        pendingCommandWrites += pending
-        val queueDepth = commandWriteQueueDepth()
+        queuedCommandWrites[operation.id] = pending
+        val snapshot = operationQueue.enqueue(operation)
+        val queueDepth = gattQueueDepth()
         onLog(
             connectionLog(
                 timestampMillis = now(),
-                callbackName = "BleConnectionManager.enqueueCommandWrite",
+                callbackName = "GattOperationQueue.enqueue",
+                gattStatus = "queued",
                 connectionState = status.name,
                 operationType = "write",
                 targetDevice = activeDevice?.address ?: gatt.device.address,
                 characteristicUuid = request.characteristicUuid,
                 message = "queued command=${request.commandName} type=${request.writeType.name} " +
-                    "bytes=${request.payload.size} value=${request.payload.toDisplayHex()} queueDepth=$queueDepth",
+                    "bytes=${request.payload.size} value=${request.payload.toDisplayHex()} " +
+                    "active=${snapshot.activeOperation?.type?.logName ?: "none"} " +
+                    "queued=${snapshot.queuedCount} queueDepth=$queueDepth",
             ),
         )
         onCommandWriteChanged(
@@ -290,7 +380,14 @@ class BleConnectionManager(
             "Queued ${request.commandName} write. queueDepth=$queueDepth.",
             queueDepth,
         )
-        startNextCommandWriteIfIdle(gatt, onCommandWriteChanged, onLog)
+        startNextGattOperationIfIdle(
+            gatt = gatt,
+            onServicesChanged = null,
+            onCharacteristicReadChanged = null,
+            onSubscriptionChanged = null,
+            onCommandWriteChanged = onCommandWriteChanged,
+            onLog = onLog,
+        )
         return BleCommandWriteStartResult.Enqueued
     }
 
@@ -299,7 +396,7 @@ class BleConnectionManager(
         onStateChanged: (BleConnectionStatus, String) -> Unit,
         onLog: (BleLogEntry) -> Unit,
     ) {
-        if (hasActiveGattOperation() || hasQueuedCommandWrites()) {
+        if (hasActiveGattOperation() || hasQueuedGattOperations()) {
             onLog(
                 connectionLog(
                     timestampMillis = now(),
@@ -308,7 +405,7 @@ class BleConnectionManager(
                     connectionState = status.name,
                     operationType = "disconnect",
                     targetDevice = activeDevice?.address ?: "unknown",
-                    message = "disconnect blocked because a GATT operation is active",
+                    message = "disconnect blocked because GATT queue is not empty queueDepth=${gattQueueDepth()}",
                 ),
             )
             return
@@ -383,6 +480,7 @@ class BleConnectionManager(
     private fun connectionCallback(
         onStateChanged: (BleConnectionStatus, String) -> Unit,
         onServicesChanged: (BleServiceDiscoveryStatus, List<BleGattService>, String) -> Unit,
+        onCharacteristicReadChanged: (BleCharacteristicReadStatus, BleCharacteristicReadResult?, String) -> Unit,
         onSubscriptionChanged: (BleSubscriptionStatus, BleCharacteristicSubscription?, String) -> Unit,
         onCommandWriteChanged: (BleCommandWriteStatus, String, Int) -> Unit,
         onNotificationReceived: (BleNotificationEvent) -> Unit,
@@ -416,7 +514,7 @@ class BleConnectionManager(
                         message = "Connected to ${activeDevice?.name ?: deviceAddress}.",
                         onStateChanged = onStateChanged,
                     )
-                    startServiceDiscovery(gatt, onServicesChanged, onLog)
+                    enqueueServiceDiscovery(gatt, onServicesChanged, onLog)
                 }
 
                 newState == BluetoothProfile.STATE_DISCONNECTED -> {
@@ -436,6 +534,10 @@ class BleConnectionManager(
                         BleServiceDiscoveryStatus.Idle,
                         emptyList(),
                         "No discovered services.",
+                    )
+                    clearReadState(
+                        onCharacteristicReadChanged = onCharacteristicReadChanged,
+                        message = "No pending characteristic reads.",
                     )
                     clearSubscriptionState(
                         onSubscriptionChanged = onSubscriptionChanged,
@@ -459,6 +561,10 @@ class BleConnectionManager(
                         BleServiceDiscoveryStatus.Failed,
                         emptyList(),
                         "GATT callback failed with status $gattStatus.",
+                    )
+                    clearReadState(
+                        onCharacteristicReadChanged = onCharacteristicReadChanged,
+                        message = "Characteristic reads cleared after GATT failure.",
                     )
                     clearSubscriptionState(
                         onSubscriptionChanged = onSubscriptionChanged,
@@ -484,6 +590,13 @@ class BleConnectionManager(
         ) {
             serviceDiscoveryTimeout?.let(handler::removeCallbacks)
             serviceDiscoveryTimeout = null
+            completeActiveGattOperation(
+                gatt = gatt,
+                expectedType = GattOperationType.ServiceDiscovery,
+                gattStatus = gattStatus.toString(),
+                callbackName = "BluetoothGattCallback.onServicesDiscovered",
+                onLog = onLog,
+            )
 
             val services = if (gattStatus == BluetoothGatt.GATT_SUCCESS) {
                 gatt.services.map { service -> service.toBleGattService() }
@@ -521,6 +634,110 @@ class BleConnectionManager(
                     "Service discovery failed with status $gattStatus.",
                 )
             }
+            startNextGattOperationIfIdle(
+                gatt = gatt,
+                onServicesChanged = onServicesChanged,
+                onCharacteristicReadChanged = onCharacteristicReadChanged,
+                onSubscriptionChanged = onSubscriptionChanged,
+                onCommandWriteChanged = onCommandWriteChanged,
+                onLog = onLog,
+            )
+        }
+
+        @Suppress("OVERRIDE_DEPRECATION")
+        override fun onCharacteristicRead(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            gattStatus: Int,
+        ) {
+            onCharacteristicRead(
+                gatt = gatt,
+                characteristic = characteristic,
+                value = characteristic.value ?: byteArrayOf(),
+                gattStatus = gattStatus,
+            )
+        }
+
+        override fun onCharacteristicRead(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            value: ByteArray,
+            gattStatus: Int,
+        ) {
+            val pending = activeRead
+            if (pending == null || characteristic.uuid.toString() != pending.request.characteristicUuid) {
+                onLog(
+                    connectionLog(
+                        timestampMillis = now(),
+                        callbackName = "BluetoothGattCallback.onCharacteristicRead",
+                        gattStatus = gattStatus.toString(),
+                        connectionState = status.name,
+                        operationType = "read",
+                        targetDevice = activeDevice?.address ?: gatt.device.address,
+                        characteristicUuid = characteristic.uuid.toString(),
+                        message = "ignored characteristic read callback",
+                    ),
+                )
+                return
+            }
+
+            readTimeout?.let(handler::removeCallbacks)
+            readTimeout = null
+            activeRead = null
+            completeActiveGattOperation(
+                gatt = gatt,
+                expectedType = GattOperationType.Read,
+                gattStatus = gattStatus.toString(),
+                callbackName = "BluetoothGattCallback.onCharacteristicRead",
+                onLog = onLog,
+            )
+
+            val success = gattStatus == BluetoothGatt.GATT_SUCCESS
+            val serviceUuid = characteristic.service?.uuid?.toString() ?: pending.request.serviceUuid
+            val valueHex = value.toDisplayHex()
+            val result = if (success) {
+                BleCharacteristicReadResult(
+                    timestampMillis = now(),
+                    targetDevice = activeDevice?.address ?: gatt.device.address,
+                    serviceUuid = serviceUuid,
+                    characteristicUuid = pending.request.characteristicUuid,
+                    valueHex = valueHex,
+                    byteCount = value.size,
+                )
+            } else {
+                null
+            }
+            val nextStatus = if (success) {
+                BleCharacteristicReadStatus.Succeeded
+            } else {
+                BleCharacteristicReadStatus.Failed
+            }
+            val message = if (success) {
+                "characteristic read succeeded bytes=${value.size} value=$valueHex queueDepth=${gattQueueDepth()}"
+            } else {
+                "characteristic read failed status=$gattStatus queueDepth=${gattQueueDepth()}"
+            }
+            onLog(
+                connectionLog(
+                    timestampMillis = now(),
+                    callbackName = "BluetoothGattCallback.onCharacteristicRead",
+                    gattStatus = gattStatus.toString(),
+                    connectionState = status.name,
+                    operationType = "read",
+                    targetDevice = activeDevice?.address ?: gatt.device.address,
+                    characteristicUuid = pending.request.characteristicUuid,
+                    message = message,
+                ),
+            )
+            onCharacteristicReadChanged(nextStatus, result, message)
+            startNextGattOperationIfIdle(
+                gatt = gatt,
+                onServicesChanged = onServicesChanged,
+                onCharacteristicReadChanged = onCharacteristicReadChanged,
+                onSubscriptionChanged = onSubscriptionChanged,
+                onCommandWriteChanged = onCommandWriteChanged,
+                onLog = onLog,
+            )
         }
 
         // CCCD書き込み結果を受け取る
@@ -558,6 +775,13 @@ class BleConnectionManager(
             subscriptionTimeout?.let(handler::removeCallbacks)
             subscriptionTimeout = null
             pendingSubscription = null
+            completeActiveGattOperation(
+                gatt = gatt,
+                expectedType = if (pending.enable) GattOperationType.Subscribe else GattOperationType.Unsubscribe,
+                gattStatus = gattStatus.toString(),
+                callbackName = "BluetoothGattCallback.onDescriptorWrite",
+                onLog = onLog,
+            )
 
             // 書き込み結果が成功か確認
             val success = gattStatus == BluetoothGatt.GATT_SUCCESS
@@ -601,7 +825,14 @@ class BleConnectionManager(
                 ),
             )
             onSubscriptionChanged(nextStatus, nextSubscription, message)
-            startNextCommandWriteIfIdle(gatt, onCommandWriteChanged, onLog)
+            startNextGattOperationIfIdle(
+                gatt = gatt,
+                onServicesChanged = onServicesChanged,
+                onCharacteristicReadChanged = onCharacteristicReadChanged,
+                onSubscriptionChanged = onSubscriptionChanged,
+                onCommandWriteChanged = onCommandWriteChanged,
+                onLog = onLog,
+            )
         }
 
         override fun onCharacteristicWrite(
@@ -629,6 +860,13 @@ class BleConnectionManager(
             commandWriteTimeout?.let(handler::removeCallbacks)
             commandWriteTimeout = null
             activeCommandWrite = null
+            completeActiveGattOperation(
+                gatt = gatt,
+                expectedType = GattOperationType.Write,
+                gattStatus = gattStatus.toString(),
+                callbackName = "BluetoothGattCallback.onCharacteristicWrite",
+                onLog = onLog,
+            )
 
             val success = gattStatus == BluetoothGatt.GATT_SUCCESS
             val nextStatus = if (success) {
@@ -639,7 +877,7 @@ class BleConnectionManager(
             val message = commandWriteCallbackMessage(
                 pending = pending,
                 gattStatus = gattStatus,
-                queueDepth = commandWriteQueueDepth(),
+                queueDepth = gattQueueDepth(),
             )
             onLog(
                 connectionLog(
@@ -653,8 +891,15 @@ class BleConnectionManager(
                     message = message,
                 ),
             )
-            onCommandWriteChanged(nextStatus, message, commandWriteQueueDepth())
-            startNextCommandWriteIfIdle(gatt, onCommandWriteChanged, onLog)
+            onCommandWriteChanged(nextStatus, message, gattQueueDepth())
+            startNextGattOperationIfIdle(
+                gatt = gatt,
+                onServicesChanged = onServicesChanged,
+                onCharacteristicReadChanged = onCharacteristicReadChanged,
+                onSubscriptionChanged = onSubscriptionChanged,
+                onCommandWriteChanged = onCommandWriteChanged,
+                onLog = onLog,
+            )
         }
 
         @Suppress("OVERRIDE_DEPRECATION")
@@ -697,6 +942,36 @@ class BleConnectionManager(
                 ),
             )
         }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun enqueueServiceDiscovery(
+        gatt: BluetoothGatt,
+        onServicesChanged: (BleServiceDiscoveryStatus, List<BleGattService>, String) -> Unit,
+        onLog: (BleLogEntry) -> Unit,
+    ) {
+        val operation = nextGattOperation(
+            type = GattOperationType.ServiceDiscovery,
+            label = "service discovery",
+        )
+        val snapshot = operationQueue.enqueue(operation)
+        logQueueState(
+            callbackName = "GattOperationQueue.enqueue",
+            gattStatus = "queued",
+            gatt = gatt,
+            operation = operation,
+            snapshot = snapshot,
+            message = "queued service discovery queueDepth=${snapshot.totalDepth}",
+            onLog = onLog,
+        )
+        startNextGattOperationIfIdle(
+            gatt = gatt,
+            onServicesChanged = onServicesChanged,
+            onCharacteristicReadChanged = null,
+            onSubscriptionChanged = null,
+            onCommandWriteChanged = null,
+            onLog = onLog,
+        )
     }
 
     @SuppressLint("MissingPermission")
@@ -754,6 +1029,13 @@ class BleConnectionManager(
         if (started) {
             scheduleServiceDiscoveryTimeout(gatt, onServicesChanged, onLog)
         } else {
+            completeActiveGattOperation(
+                gatt = gatt,
+                expectedType = GattOperationType.ServiceDiscovery,
+                gattStatus = "startFailed",
+                callbackName = "BluetoothGatt.discoverServices",
+                onLog = onLog,
+            )
             onServicesChanged(
                 BleServiceDiscoveryStatus.Failed,
                 emptyList(),
@@ -771,6 +1053,13 @@ class BleConnectionManager(
         serviceDiscoveryTimeout = null
         val timeout = Runnable {
             if (status == BleConnectionStatus.Connected) {
+                completeActiveGattOperation(
+                    gatt = gatt,
+                    expectedType = GattOperationType.ServiceDiscovery,
+                    gattStatus = "timeout",
+                    callbackName = "BleConnectionManager.serviceDiscoveryTimeout",
+                    onLog = onLog,
+                )
                 onLog(
                     connectionLog(
                         timestampMillis = now(),
@@ -843,6 +1132,13 @@ class BleConnectionManager(
                 BleSubscriptionStartResult.Started
             } else {
                 pendingSubscription = null
+                completeActiveGattOperation(
+                    gatt = gatt,
+                    expectedType = if (pending.enable) GattOperationType.Subscribe else GattOperationType.Unsubscribe,
+                    gattStatus = "startFailed",
+                    callbackName = "BluetoothGatt.writeDescriptor",
+                    onLog = onLog,
+                )
                 if (pending.enable) {
                     setCharacteristicNotification(
                         gatt = gatt,
@@ -892,6 +1188,13 @@ class BleConnectionManager(
         val timeout = Runnable {
             if (pendingSubscription == pending) {
                 pendingSubscription = null
+                completeActiveGattOperation(
+                    gatt = gatt,
+                    expectedType = if (pending.enable) GattOperationType.Subscribe else GattOperationType.Unsubscribe,
+                    gattStatus = "timeout",
+                    callbackName = "BleConnectionManager.subscriptionTimeout",
+                    onLog = onLog,
+                )
                 if (pending.enable) {
                     setCharacteristicNotification(
                         gatt = gatt,
@@ -922,16 +1225,163 @@ class BleConnectionManager(
     }
 
     @SuppressLint("MissingPermission")
-    private fun startNextCommandWriteIfIdle(
+    private fun startNextGattOperationIfIdle(
         gatt: BluetoothGatt,
+        onServicesChanged: ((BleServiceDiscoveryStatus, List<BleGattService>, String) -> Unit)?,
+        onCharacteristicReadChanged: ((BleCharacteristicReadStatus, BleCharacteristicReadResult?, String) -> Unit)?,
+        onSubscriptionChanged: ((BleSubscriptionStatus, BleCharacteristicSubscription?, String) -> Unit)?,
+        onCommandWriteChanged: ((BleCommandWriteStatus, String, Int) -> Unit)?,
+        onLog: (BleLogEntry) -> Unit,
+    ) {
+        val operation = operationQueue.startNextIfIdle() ?: return
+        logQueueState(
+            callbackName = "GattOperationQueue.start",
+            gattStatus = "started",
+            gatt = gatt,
+            operation = operation,
+            snapshot = operationQueue.snapshot(),
+            message = "started ${operation.type.logName} queueDepth=${gattQueueDepth()}",
+            onLog = onLog,
+        )
+        when (operation.type) {
+            GattOperationType.ServiceDiscovery -> {
+                if (onServicesChanged == null) {
+                    failOperationWithoutCallback(gatt, operation, onLog)
+                } else {
+                    startServiceDiscovery(gatt, onServicesChanged, onLog)
+                }
+            }
+
+            GattOperationType.Read -> {
+                val pending = queuedReads.remove(operation.id)
+                if (pending == null || onCharacteristicReadChanged == null) {
+                    failOperationWithoutCallback(gatt, operation, onLog)
+                } else {
+                    startQueuedCharacteristicRead(gatt, pending, onCharacteristicReadChanged, onLog)
+                }
+            }
+
+            GattOperationType.Subscribe,
+            GattOperationType.Unsubscribe,
+            -> {
+                val pending = queuedSubscriptions.remove(operation.id)
+                if (pending == null || onSubscriptionChanged == null) {
+                    failOperationWithoutCallback(gatt, operation, onLog)
+                } else {
+                    startQueuedSubscriptionWrite(gatt, pending, onSubscriptionChanged, onLog)
+                }
+            }
+
+            GattOperationType.Write -> {
+                val pending = queuedCommandWrites.remove(operation.id)
+                if (pending == null || onCommandWriteChanged == null) {
+                    failOperationWithoutCallback(gatt, operation, onLog)
+                } else {
+                    startQueuedCommandWrite(gatt, pending, onCommandWriteChanged, onLog)
+                }
+            }
+        }
+    }
+
+    private fun startQueuedSubscriptionWrite(
+        gatt: BluetoothGatt,
+        pending: PendingSubscription,
+        onSubscriptionChanged: (BleSubscriptionStatus, BleCharacteristicSubscription?, String) -> Unit,
+        onLog: (BleLogEntry) -> Unit,
+    ) {
+        pendingSubscription = pending
+        val nextStatus = if (pending.enable) {
+            BleSubscriptionStatus.Subscribing
+        } else {
+            BleSubscriptionStatus.Unsubscribing
+        }
+        onSubscriptionChanged(
+            nextStatus,
+            pending.subscription,
+            "${if (pending.enable) "Subscribe" else "Unsubscribe"} started for " +
+                "${pending.subscription.characteristicUuid}.",
+        )
+        tryStartSubscriptionWrite(
+            gatt = gatt,
+            pending = pending,
+            descriptorValue = if (pending.enable) {
+                pending.subscription.mode.enableDescriptorValue()
+            } else {
+                BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
+            },
+            startFailureSubscription = if (pending.enable) null else activeSubscription,
+            onSubscriptionChanged = onSubscriptionChanged,
+            onLog = onLog,
+        )
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startQueuedCharacteristicRead(
+        gatt: BluetoothGatt,
+        pending: PendingCharacteristicRead,
+        onCharacteristicReadChanged: (BleCharacteristicReadStatus, BleCharacteristicReadResult?, String) -> Unit,
+        onLog: (BleLogEntry) -> Unit,
+    ) {
+        activeRead = pending
+        val request = pending.request
+        onLog(
+            connectionLog(
+                timestampMillis = now(),
+                callbackName = "BluetoothGatt.readCharacteristic",
+                connectionState = status.name,
+                operationType = "read",
+                targetDevice = activeDevice?.address ?: gatt.device.address,
+                characteristicUuid = request.characteristicUuid,
+                message = "read requested queueDepth=${gattQueueDepth()}",
+            ),
+        )
+
+        try {
+            if (gatt.readCharacteristic(pending.characteristic)) {
+                onCharacteristicReadChanged(
+                    BleCharacteristicReadStatus.Reading,
+                    null,
+                    "Reading ${request.characteristicUuid}. queueDepth=${gattQueueDepth()}.",
+                )
+                scheduleReadTimeout(gatt, pending, onCharacteristicReadChanged, onLog)
+            } else {
+                failStartedCharacteristicRead(
+                    gatt = gatt,
+                    pending = pending,
+                    gattStatus = "readNotStarted",
+                    message = "readCharacteristic could not be started.",
+                    onCharacteristicReadChanged = onCharacteristicReadChanged,
+                    onLog = onLog,
+                )
+            }
+        } catch (exception: SecurityException) {
+            failStartedCharacteristicRead(
+                gatt = gatt,
+                pending = pending,
+                gattStatus = "permissionDenied",
+                message = exception.message ?: "Missing permission while reading characteristic",
+                onCharacteristicReadChanged = onCharacteristicReadChanged,
+                onLog = onLog,
+            )
+        } catch (exception: RuntimeException) {
+            failStartedCharacteristicRead(
+                gatt = gatt,
+                pending = pending,
+                gattStatus = "readError",
+                message = exception.message ?: "Unable to read characteristic",
+                onCharacteristicReadChanged = onCharacteristicReadChanged,
+                onLog = onLog,
+            )
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startQueuedCommandWrite(
+        gatt: BluetoothGatt,
+        pending: PendingCommandWrite,
         onCommandWriteChanged: (BleCommandWriteStatus, String, Int) -> Unit,
         onLog: (BleLogEntry) -> Unit,
     ) {
-        if (hasActiveGattOperation() || !hasQueuedCommandWrites()) {
-            return
-        }
-
-        val pending = pendingCommandWrites.removeAt(0)
         activeCommandWrite = pending
         val request = pending.request
         onLog(
@@ -944,7 +1394,7 @@ class BleConnectionManager(
                 characteristicUuid = request.characteristicUuid,
                 message = "write requested command=${request.commandName} type=${request.writeType.name} " +
                     "bytes=${request.payload.size} value=${request.payload.toDisplayHex()} " +
-                    "queueDepth=${commandWriteQueueDepth()}",
+                    "queueDepth=${gattQueueDepth()}",
             ),
         )
 
@@ -958,8 +1408,8 @@ class BleConnectionManager(
             if (started) {
                 onCommandWriteChanged(
                     BleCommandWriteStatus.Writing,
-                    "Writing ${request.commandName}. queueDepth=${commandWriteQueueDepth()}.",
-                    commandWriteQueueDepth(),
+                    "Writing ${request.commandName}. queueDepth=${gattQueueDepth()}.",
+                    gattQueueDepth(),
                 )
                 scheduleCommandWriteTimeout(gatt, pending, onCommandWriteChanged, onLog)
             } else {
@@ -993,6 +1443,77 @@ class BleConnectionManager(
         }
     }
 
+    private fun scheduleReadTimeout(
+        gatt: BluetoothGatt,
+        pending: PendingCharacteristicRead,
+        onCharacteristicReadChanged: (BleCharacteristicReadStatus, BleCharacteristicReadResult?, String) -> Unit,
+        onLog: (BleLogEntry) -> Unit,
+    ) {
+        readTimeout?.let(handler::removeCallbacks)
+        readTimeout = null
+        val timeout = Runnable {
+            if (activeRead == pending) {
+                activeRead = null
+                completeActiveGattOperation(
+                    gatt = gatt,
+                    expectedType = GattOperationType.Read,
+                    gattStatus = "timeout",
+                    callbackName = "BleConnectionManager.readTimeout",
+                    onLog = onLog,
+                )
+                val request = pending.request
+                val message = "characteristic read timeout after ${READ_TIMEOUT_MILLIS}ms"
+                onLog(
+                    connectionLog(
+                        timestampMillis = now(),
+                        callbackName = "BleConnectionManager.readTimeout",
+                        gattStatus = "timeout",
+                        connectionState = status.name,
+                        operationType = "read",
+                        targetDevice = activeDevice?.address ?: gatt.device.address,
+                        characteristicUuid = request.characteristicUuid,
+                        message = message,
+                    ),
+                )
+                onCharacteristicReadChanged(BleCharacteristicReadStatus.Failed, null, message)
+            }
+        }
+        readTimeout = timeout
+        handler.postDelayed(timeout, READ_TIMEOUT_MILLIS)
+    }
+
+    private fun failStartedCharacteristicRead(
+        gatt: BluetoothGatt,
+        pending: PendingCharacteristicRead,
+        gattStatus: String,
+        message: String,
+        onCharacteristicReadChanged: (BleCharacteristicReadStatus, BleCharacteristicReadResult?, String) -> Unit,
+        onLog: (BleLogEntry) -> Unit,
+    ) {
+        activeRead = null
+        completeActiveGattOperation(
+            gatt = gatt,
+            expectedType = GattOperationType.Read,
+            gattStatus = gattStatus,
+            callbackName = "BluetoothGatt.readCharacteristic",
+            onLog = onLog,
+        )
+        val request = pending.request
+        onLog(
+            connectionLog(
+                timestampMillis = now(),
+                callbackName = "BluetoothGatt.readCharacteristic",
+                gattStatus = gattStatus,
+                connectionState = status.name,
+                operationType = "read",
+                targetDevice = activeDevice?.address ?: gatt.device.address,
+                characteristicUuid = request.characteristicUuid,
+                message = message,
+            ),
+        )
+        onCharacteristicReadChanged(BleCharacteristicReadStatus.Failed, null, message)
+    }
+
     private fun scheduleCommandWriteTimeout(
         gatt: BluetoothGatt,
         pending: PendingCommandWrite,
@@ -1004,6 +1525,13 @@ class BleConnectionManager(
         val timeout = Runnable {
             if (activeCommandWrite == pending) {
                 activeCommandWrite = null
+                completeActiveGattOperation(
+                    gatt = gatt,
+                    expectedType = GattOperationType.Write,
+                    gattStatus = "timeout",
+                    callbackName = "BleConnectionManager.commandWriteTimeout",
+                    onLog = onLog,
+                )
                 val request = pending.request
                 val message = "command write timeout after ${COMMAND_WRITE_TIMEOUT_MILLIS}ms " +
                     "command=${request.commandName} value=${request.payload.toDisplayHex()}"
@@ -1019,8 +1547,15 @@ class BleConnectionManager(
                         message = message,
                     ),
                 )
-                onCommandWriteChanged(BleCommandWriteStatus.Failed, message, commandWriteQueueDepth())
-                startNextCommandWriteIfIdle(gatt, onCommandWriteChanged, onLog)
+                onCommandWriteChanged(BleCommandWriteStatus.Failed, message, gattQueueDepth())
+                startNextGattOperationIfIdle(
+                    gatt = gatt,
+                    onServicesChanged = null,
+                    onCharacteristicReadChanged = null,
+                    onSubscriptionChanged = null,
+                    onCommandWriteChanged = onCommandWriteChanged,
+                    onLog = onLog,
+                )
             }
         }
         commandWriteTimeout = timeout
@@ -1036,6 +1571,13 @@ class BleConnectionManager(
         onLog: (BleLogEntry) -> Unit,
     ) {
         activeCommandWrite = null
+        completeActiveGattOperation(
+            gatt = gatt,
+            expectedType = GattOperationType.Write,
+            gattStatus = gattStatus,
+            callbackName = "BluetoothGatt.writeCharacteristic",
+            onLog = onLog,
+        )
         val request = pending.request
         onLog(
             connectionLog(
@@ -1049,8 +1591,15 @@ class BleConnectionManager(
                 message = "$message command=${request.commandName} value=${request.payload.toDisplayHex()}",
             ),
         )
-        onCommandWriteChanged(BleCommandWriteStatus.Failed, message, commandWriteQueueDepth())
-        startNextCommandWriteIfIdle(gatt, onCommandWriteChanged, onLog)
+        onCommandWriteChanged(BleCommandWriteStatus.Failed, message, gattQueueDepth())
+        startNextGattOperationIfIdle(
+            gatt = gatt,
+            onServicesChanged = null,
+            onCharacteristicReadChanged = null,
+            onSubscriptionChanged = null,
+            onCommandWriteChanged = onCommandWriteChanged,
+            onLog = onLog,
+        )
     }
 
     private fun scheduleConnectTimeout(
@@ -1161,13 +1710,19 @@ class BleConnectionManager(
         disconnectTimeout = null
         serviceDiscoveryTimeout?.let(handler::removeCallbacks)
         serviceDiscoveryTimeout = null
+        readTimeout?.let(handler::removeCallbacks)
+        readTimeout = null
         subscriptionTimeout?.let(handler::removeCallbacks)
         subscriptionTimeout = null
         commandWriteTimeout?.let(handler::removeCallbacks)
         commandWriteTimeout = null
+        operationQueue.clear()
+        queuedReads.clear()
+        queuedSubscriptions.clear()
+        queuedCommandWrites.clear()
+        activeRead = null
         pendingSubscription = null
         activeCommandWrite = null
-        pendingCommandWrites.clear()
     }
 
     private fun closeGatt(
@@ -1218,9 +1773,24 @@ class BleConnectionManager(
             }
             activeDevice = null
             activeSubscription = null
+            activeRead = null
             activeCommandWrite = null
-            pendingCommandWrites.clear()
+            queuedReads.clear()
+            queuedSubscriptions.clear()
+            queuedCommandWrites.clear()
+            operationQueue.clear()
         }
+    }
+
+    private fun clearReadState(
+        onCharacteristicReadChanged: (BleCharacteristicReadStatus, BleCharacteristicReadResult?, String) -> Unit,
+        message: String,
+    ) {
+        readTimeout?.let(handler::removeCallbacks)
+        readTimeout = null
+        activeRead = null
+        queuedReads.clear()
+        onCharacteristicReadChanged(BleCharacteristicReadStatus.Idle, null, message)
     }
 
     private fun clearSubscriptionState(
@@ -1241,20 +1811,108 @@ class BleConnectionManager(
         commandWriteTimeout?.let(handler::removeCallbacks)
         commandWriteTimeout = null
         activeCommandWrite = null
-        pendingCommandWrites.clear()
-        onCommandWriteChanged(BleCommandWriteStatus.Idle, message, commandWriteQueueDepth())
+        queuedCommandWrites.clear()
+        onCommandWriteChanged(BleCommandWriteStatus.Idle, message, gattQueueDepth())
     }
 
-    private fun commandWriteQueueDepth(): Int {
-        val inFlightWriteCount = if (activeCommandWrite != null) 1 else 0
-        return inFlightWriteCount + pendingCommandWrites.size
+    private fun gattQueueDepth(): Int = operationQueue.snapshot().totalDepth
+
+    private fun hasActiveGattOperation(): Boolean = operationQueue.snapshot().activeOperation != null
+
+    private fun hasQueuedGattOperations(): Boolean = operationQueue.snapshot().queuedOperations.isNotEmpty()
+
+    private fun nextGattOperation(
+        type: GattOperationType,
+        serviceUuid: String? = null,
+        characteristicUuid: String? = null,
+        label: String = type.logName,
+    ): GattOperation {
+        return GattOperation(
+            id = nextGattOperationId++,
+            type = type,
+            serviceUuid = serviceUuid,
+            characteristicUuid = characteristicUuid,
+            label = label,
+        )
     }
 
-    // すでにCommand Write中 または Notify/IndicateのSubscribe/Unsubscribe中
-    private fun hasActiveGattOperation(): Boolean = pendingSubscription != null || activeCommandWrite != null
+    private fun completeActiveGattOperation(
+        gatt: BluetoothGatt,
+        expectedType: GattOperationType,
+        gattStatus: String,
+        callbackName: String,
+        onLog: (BleLogEntry) -> Unit,
+    ) {
+        val active = operationQueue.snapshot().activeOperation
+        if (active == null || active.type != expectedType) {
+            onLog(
+                connectionLog(
+                    timestampMillis = now(),
+                    callbackName = callbackName,
+                    gattStatus = "unexpectedOperation",
+                    connectionState = status.name,
+                    operationType = expectedType.logName,
+                    targetDevice = activeDevice?.address ?: gatt.device.address,
+                    characteristicUuid = active?.characteristicUuidForLog() ?: "N/A",
+                    message = "callback did not match active operation expected=${expectedType.logName} " +
+                        "active=${active?.type?.logName ?: "none"}",
+                ),
+            )
+            return
+        }
 
-    // キューにコマンドがある
-    private fun hasQueuedCommandWrites(): Boolean = pendingCommandWrites.isNotEmpty()
+        operationQueue.completeActive(active.id)
+        logQueueState(
+            callbackName = callbackName,
+            gattStatus = gattStatus,
+            gatt = gatt,
+            operation = active,
+            snapshot = operationQueue.snapshot(),
+            message = "completed ${active.type.logName} queueDepth=${gattQueueDepth()}",
+            onLog = onLog,
+        )
+    }
+
+    private fun failOperationWithoutCallback(
+        gatt: BluetoothGatt,
+        operation: GattOperation,
+        onLog: (BleLogEntry) -> Unit,
+    ) {
+        operationQueue.completeActive(operation.id)
+        logQueueState(
+            callbackName = "GattOperationQueue.start",
+            gattStatus = "missingCallback",
+            gatt = gatt,
+            operation = operation,
+            snapshot = operationQueue.snapshot(),
+            message = "operation could not start because required callback was unavailable",
+            onLog = onLog,
+        )
+    }
+
+    private fun logQueueState(
+        callbackName: String,
+        gattStatus: String,
+        gatt: BluetoothGatt,
+        operation: GattOperation,
+        snapshot: GattOperationQueueSnapshot,
+        message: String,
+        onLog: (BleLogEntry) -> Unit,
+    ) {
+        onLog(
+            connectionLog(
+                timestampMillis = now(),
+                callbackName = callbackName,
+                gattStatus = gattStatus,
+                connectionState = status.name,
+                operationType = operation.type.logName,
+                targetDevice = activeDevice?.address ?: gatt.device.address,
+                characteristicUuid = operation.characteristicUuidForLog(),
+                message = "$message active=${snapshot.activeOperation?.type?.logName ?: "none"} " +
+                    "queued=${snapshot.queuedCount}",
+            ),
+        )
+    }
 
     private fun failSubscriptionStart(
         gatt: BluetoothGatt,
@@ -1265,6 +1923,13 @@ class BleConnectionManager(
         onLog: (BleLogEntry) -> Unit,
     ) {
         pendingSubscription = null
+        completeActiveGattOperation(
+            gatt = gatt,
+            expectedType = if (pending.enable) GattOperationType.Subscribe else GattOperationType.Unsubscribe,
+            gattStatus = gattStatus,
+            callbackName = "BluetoothGatt.writeDescriptor",
+            onLog = onLog,
+        )
         if (pending.enable) {
             setCharacteristicNotification(
                 gatt = gatt,
@@ -1308,8 +1973,17 @@ enum class BleServiceDiscoveryStatus {
     Failed,
 }
 
+enum class BleCharacteristicReadStatus {
+    Idle,
+    Queued,
+    Reading,
+    Succeeded,
+    Failed,
+}
+
 enum class BleSubscriptionStatus {
     Idle,
+    Queued,
     Subscribing,
     Subscribed,
     Unsubscribing,
@@ -1334,6 +2008,8 @@ sealed interface BleConnectionStartResult {
 }
 
 sealed interface BleSubscriptionStartResult {
+    data object Enqueued : BleSubscriptionStartResult
+
     // 購読に成功
     data object Started : BleSubscriptionStartResult
 
@@ -1371,6 +2047,15 @@ sealed interface BleSubscriptionStartResult {
     data class Error(val message: String) : BleSubscriptionStartResult
 }
 
+sealed interface BleCharacteristicReadStartResult {
+    data object Enqueued : BleCharacteristicReadStartResult
+    data object NoActiveGatt : BleCharacteristicReadStartResult
+    data class NotConnected(val status: BleConnectionStatus) : BleCharacteristicReadStartResult
+    data object CharacteristicUnavailable : BleCharacteristicReadStartResult
+    data object UnsupportedProperty : BleCharacteristicReadStartResult
+    data class PermissionMissing(val missingPermissions: List<String>) : BleCharacteristicReadStartResult
+}
+
 sealed interface BleCommandWriteStartResult {
     data object Enqueued : BleCommandWriteStartResult
     data object NoActiveGatt : BleCommandWriteStartResult
@@ -1386,11 +2071,18 @@ private data class PendingSubscription(
     val enable: Boolean,
     val characteristic: BluetoothGattCharacteristic,
     val descriptor: BluetoothGattDescriptor,
+    val operationId: Long,
+)
+
+private data class PendingCharacteristicRead(
+    val request: BleCharacteristicReadRequest,
+    val characteristic: BluetoothGattCharacteristic,
 )
 
 private data class PendingCommandWrite(
     val request: BleCommandWriteRequest,
     val characteristic: BluetoothGattCharacteristic,
+    val operationId: Long,
 )
 
 private data class GattTarget(
@@ -1469,6 +2161,9 @@ private fun BluetoothGattCharacteristic.supports(mode: BleSubscriptionMode): Boo
         BleSubscriptionMode.Indication -> properties hasProperty BluetoothGattCharacteristic.PROPERTY_INDICATE
     }
 }
+
+private fun BluetoothGattCharacteristic.supportsRead(): Boolean =
+    properties hasProperty BluetoothGattCharacteristic.PROPERTY_READ
 
 private fun BluetoothGattCharacteristic.supports(writeType: BleCharacteristicWriteType): Boolean {
     return when (writeType) {
