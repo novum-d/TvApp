@@ -1,0 +1,253 @@
+' TvApp main branch BLE state transitions
+' Source revision: d87b3bc1382f4271b8ba5e9d080c712b1365408e
+' Sources:
+' - app/src/main/java/io/novumd/tvapp/ui/scan/BleScanUiState.kt
+' - app/src/main/java/io/novumd/tvapp/ui/scan/BleScanViewModel.kt
+' - app/src/main/java/io/novumd/tvapp/ble/BleScanner.kt
+' - app/src/main/java/io/novumd/tvapp/ble/BleConnectionManager.kt
+
+@startuml ble-overview
+title TvApp BLE主要フロー（main @ d87b3bc）
+
+skinparam shadowing false
+skinparam state {
+  BackgroundColor #F7F8FA
+  BorderColor #52606D
+  ArrowColor #334E68
+}
+
+state "環境確認" as EnvironmentCheck
+state "権限待ち" as PermissionRequired
+state "Bluetooth OFF" as BluetoothOff
+state "スキャン停止" as ScanStopped
+state "スキャン中" as Scanning
+state "接続中" as Connecting
+state "接続済み" as Connected
+state "切断中" as Disconnecting
+state "切断済み" as Disconnected
+state "接続失敗" as ConnectionFailed
+
+[*] --> EnvironmentCheck : Activity起動 / ON_RESUME
+EnvironmentCheck --> PermissionRequired : スキャン権限なし
+EnvironmentCheck --> BluetoothOff : Bluetooth OFF
+EnvironmentCheck --> ScanStopped : 権限OK / Bluetooth ON
+
+PermissionRequired --> EnvironmentCheck : 権限結果 / ON_RESUME
+BluetoothOff --> EnvironmentCheck : Bluetooth ON後にON_RESUME
+
+ScanStopped --> Scanning : startScan()成功
+Scanning --> Scanning : デバイス検出 / 一覧更新
+Scanning --> ScanStopped : stopScan()
+Scanning --> Connecting : デバイス選択\nスキャン停止後にconnectGatt()
+
+Connecting --> Connected : 接続callback成功
+Connecting --> ConnectionFailed : GATTエラー / 15秒timeout
+Connected --> Disconnecting : disconnect()\nGATT操作なし
+Connected --> Disconnected : remote切断\nGATT_SUCCESS
+Connected --> ConnectionFailed : GATT異常切断
+Disconnecting --> Disconnected : 切断callback成功 / 5秒timeout
+Disconnecting --> ConnectionFailed : 切断例外 / callbackエラー
+Disconnected --> Connecting : 別デバイスを選択
+ConnectionFailed --> Connecting : 再試行
+
+note right of Connected
+  接続成功後にサービス探索を自動開始する。
+  接続中の購読・通知受信・コマンド書き込みでは
+  BleConnectionStatusはConnectedのまま。
+end note
+
+note bottom
+  このページは主要ユーザーフローの要約。
+  実装ではスキャン、接続、サービス探索、購読、
+  コマンド書き込みを独立した状態として保持する。
+end note
+
+@enduml
+
+@startuml scan-state
+title スキャン状態（BleScanStatus）
+
+skinparam shadowing false
+hide empty description
+
+state Stopped
+state Scanning
+state PermissionRequired
+state BluetoothOff
+state Error
+
+[*] --> Stopped : BleScanUiState生成
+
+Stopped --> Scanning : startScan() / Started
+Stopped --> PermissionRequired : refreshまたはstart\n権限不足
+Stopped --> BluetoothOff : refreshまたはstart\nBluetooth OFF
+Stopped --> Error : scanner利用不可 / start例外
+
+Scanning --> Scanning : onScanResult / onBatchScanResults
+Scanning --> Stopped : stopScan() / connect()選択
+Scanning --> Error : onScanFailed
+Scanning --> PermissionRequired : refresh / 権限不足
+Scanning --> BluetoothOff : refresh / Bluetooth OFF
+
+PermissionRequired --> Stopped : 権限許可 / Bluetooth ON
+PermissionRequired --> PermissionRequired : 権限拒否
+PermissionRequired --> BluetoothOff : 権限許可 / Bluetooth OFF
+
+BluetoothOff --> Stopped : Bluetooth ON / ON_RESUME
+BluetoothOff --> PermissionRequired : refresh / 権限不足
+BluetoothOff --> BluetoothOff : refresh / Bluetooth OFF継続
+
+Error --> Stopped : refresh / 実行可能
+Error --> Scanning : startScan()再試行成功
+Error --> PermissionRequired : 再確認 / 権限不足
+Error --> BluetoothOff : 再確認 / Bluetooth OFF
+
+note right of Scanning
+  refreshEnvironmentState()は、権限不足と
+  Bluetooth OFFをこの順で優先して判定する。
+end note
+
+@enduml
+
+@startuml connection-and-discovery-state
+title GATT接続・サービス探索状態
+
+skinparam shadowing false
+hide empty description
+
+state "接続状態 (BleConnectionStatus)" as Connection {
+  state Disconnected
+  state Connecting
+  state Connected
+  state Disconnecting
+  state Failed
+
+  [*] --> Disconnected
+  Disconnected --> Connecting : connect()開始
+  Disconnected --> Failed : 権限不足 / Bluetooth OFF\n不正address / 開始失敗
+  Disconnected --> Disconnected : disconnect() / GATTなし
+
+  Connecting --> Connected : callback\nGATT_SUCCESS + CONNECTED
+  Connecting --> Disconnected : callback\nGATT_SUCCESS + DISCONNECTED
+  Connecting --> Failed : connect例外 / GATTエラー\n15秒timeout
+  Connecting --> Connecting : 二重connectを無視
+
+  Connected --> Disconnecting : disconnect()\nGATT操作なし
+  Connected --> Connected : 二重connectを無視\nまたは操作中のdisconnectを拒否
+  Connected --> Disconnected : remote切断 / GATT_SUCCESS
+  Connected --> Failed : GATT異常切断 / callbackエラー
+
+  Disconnecting --> Disconnected : callback成功 / 5秒timeout
+  Disconnecting --> Failed : disconnect例外 / callbackエラー
+  Disconnecting --> Disconnecting : connectを無視
+
+  Failed --> Connecting : connect()再試行
+  Failed --> Failed : 再試行の事前条件エラー
+}
+
+state "サービス探索状態 (BleServiceDiscoveryStatus)" as Discovery {
+  state Idle
+  state Discovering
+  state Discovered
+  state DiscoveryFailed <<failed>>
+
+  [*] --> Idle
+  Idle --> Discovering : 接続成功後にdiscoverServices()
+  Discovering --> Discovered : onServicesDiscovered\nGATT_SUCCESS
+  Discovering --> DiscoveryFailed : 開始失敗 / callbackエラー\n10秒timeout
+  Discovered --> Idle : 接続終了 / 次回connect開始
+  DiscoveryFailed --> Idle : 接続終了 / 次回connect開始
+}
+
+Connected --> Discovering : 接続成功で自動開始
+Disconnected --> Idle : サービス一覧を消去
+Failed --> Idle : サービス一覧を消去
+
+@enduml
+
+@startuml subscription-state
+title Notification / Indication購読状態（BleSubscriptionStatus）
+
+skinparam shadowing false
+hide empty description
+
+state Idle
+state Subscribing
+state Subscribed
+state Unsubscribing
+state Failed
+
+[*] --> Idle
+
+Idle --> Subscribing : subscribe()\nlocal通知ON + CCCD write開始
+Idle --> Failed : 事前条件または開始失敗
+Subscribing --> Subscribed : onDescriptorWrite成功
+Subscribing --> Failed : callbackエラー / 10秒timeout
+
+Subscribed --> Subscribed : onCharacteristicChanged\n通知内容を更新
+Subscribed --> Unsubscribing : unsubscribe()\nlocal通知OFF + CCCD write開始
+Subscribed --> Failed : unsubscribe開始前エラー
+Unsubscribing --> Idle : onDescriptorWrite成功
+Unsubscribing --> Failed : callbackエラー / 10秒timeout
+
+Failed --> Subscribing : subscribe()再試行
+Failed --> Unsubscribing : activeSubscription保持時に再試行
+
+Subscribing --> Idle : 接続終了
+Subscribed --> Idle : 接続終了
+Unsubscribing --> Idle : 接続終了
+Failed --> Idle : 接続終了
+
+note right of Failed
+  unsubscribe失敗時はPeripheral側のCCCD状態が
+  不明なためactiveSubscriptionを保持する。
+  subscribe失敗時はlocal通知をOFFに戻す。
+end note
+
+@enduml
+
+@startuml command-write-state
+title コマンド書き込み状態（BleCommandWriteStatus）
+
+skinparam shadowing false
+hide empty description
+
+state Idle
+state Queued
+state Writing
+state Succeeded
+state Failed
+
+[*] --> Idle
+
+Idle --> Queued : enqueueCommandWrite()受付
+Succeeded --> Queued : 次のコマンドをenqueue
+Failed --> Queued : コマンドを再enqueue
+Writing --> Queued : 実行中に追加enqueue
+
+Queued --> Writing : queue先頭をwriteCharacteristic()
+Writing --> Succeeded : onCharacteristicWrite\nGATT_SUCCESS
+Writing --> Failed : 開始失敗 / callbackエラー\n10秒timeout
+Queued --> Succeeded : 追加enqueue後に\n実行中writeが成功
+Queued --> Failed : 追加enqueue後に\n実行中writeが失敗
+
+Succeeded --> Writing : queueに次のwriteあり
+Failed --> Writing : queueに次のwriteあり
+
+Queued --> Idle : 接続終了
+Writing --> Idle : 接続終了
+Succeeded --> Idle : 接続終了
+Failed --> Idle : 接続終了
+
+note right of Writing
+  activeCommandWriteは常に最大1件。
+  完了・失敗・timeout後にだけ次のwriteを開始する。
+end note
+
+note bottom
+  Queuedはキュー全体の静止状態ではなく、enqueue時に通知されるUI状態。
+  実行中に追加enqueueすると、active writeを維持したまま
+  表示状態がWritingからQueuedへ変わる場合がある。
+end note
+
+@enduml
