@@ -38,6 +38,7 @@ import io.novumd.tvapp.ble.BleSubscriptionStatus
 import io.novumd.tvapp.ble.DiscoveredBleDevice
 import io.novumd.tvapp.ble.formatForDisplay
 import io.novumd.tvapp.ble.propertyLabels
+import io.novumd.tvapp.ble.supportsRead
 import io.novumd.tvapp.ble.subscriptionModes
 import io.novumd.tvapp.ble.toDisplayHex
 import io.novumd.tvapp.ble.writeTypes
@@ -56,6 +57,7 @@ data class BleScanScreenActions(
     val onStopScan: () -> Unit,
     val onConnectDevice: (DiscoveredBleDevice) -> Unit,
     val onDisconnectDevice: () -> Unit,
+    val onReadCharacteristic: (String, String) -> Unit,
     val onSubscribe: (String, String, BleSubscriptionMode) -> Unit,
     val onUnsubscribe: () -> Unit,
     val onWriteCommand: (String, String, BleCharacteristicWriteType, TvCommand) -> Unit,
@@ -133,6 +135,7 @@ fun BleScanScreen(
         item(key = "service_panel") {
             ServiceDiscoveryPanel(
                 uiState = uiState,
+                onReadCharacteristic = actions.onReadCharacteristic,
                 onSubscribe = actions.onSubscribe,
                 onUnsubscribe = actions.onUnsubscribe,
                 onWriteCommand = actions.onWriteCommand,
@@ -304,6 +307,7 @@ private fun DeviceList(
 @Composable
 private fun ServiceDiscoveryPanel(
     uiState: BleScanUiState,
+    onReadCharacteristic: (String, String) -> Unit,
     onSubscribe: (String, String, BleSubscriptionMode) -> Unit,
     onUnsubscribe: () -> Unit,
     onWriteCommand: (String, String, BleCharacteristicWriteType, TvCommand) -> Unit,
@@ -326,6 +330,21 @@ private fun ServiceDiscoveryPanel(
             text = uiState.serviceDiscoveryMessage,
             style = MaterialTheme.typography.bodySmall,
         )
+        Text(
+            text = "Read: ${uiState.characteristicReadStatus.name}",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Text(
+            text = uiState.characteristicReadMessage,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        uiState.lastCharacteristicRead?.let { result ->
+            Text(
+                text = "${result.characteristicUuid} bytes=${result.byteCount} value=${result.valueHex}",
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+            )
+        }
         Text(
             text = "Subscription: ${uiState.subscriptionStatus.name}",
             style = MaterialTheme.typography.bodyMedium,
@@ -377,6 +396,7 @@ private fun ServiceDiscoveryPanel(
                     connectionStatus = uiState.connectionStatus,
                     subscriptionStatus = uiState.subscriptionStatus,
                     activeSubscription = uiState.activeSubscription,
+                    onReadCharacteristic = onReadCharacteristic,
                     onSubscribe = onSubscribe,
                     onUnsubscribe = onUnsubscribe,
                     onWriteCommand = onWriteCommand,
@@ -392,6 +412,7 @@ private fun ServiceItem(
     connectionStatus: BleConnectionStatus,
     subscriptionStatus: BleSubscriptionStatus,
     activeSubscription: BleCharacteristicSubscription?,
+    onReadCharacteristic: (String, String) -> Unit,
     onSubscribe: (String, String, BleSubscriptionMode) -> Unit,
     onUnsubscribe: () -> Unit,
     onWriteCommand: (String, String, BleCharacteristicWriteType, TvCommand) -> Unit,
@@ -421,6 +442,7 @@ private fun ServiceItem(
                     connectionStatus = connectionStatus,
                     subscriptionStatus = subscriptionStatus,
                     activeSubscription = activeSubscription,
+                    onReadCharacteristic = onReadCharacteristic,
                     onSubscribe = onSubscribe,
                     onUnsubscribe = onUnsubscribe,
                     onWriteCommand = onWriteCommand,
@@ -437,6 +459,7 @@ private fun CharacteristicItem(
     connectionStatus: BleConnectionStatus,
     subscriptionStatus: BleSubscriptionStatus,
     activeSubscription: BleCharacteristicSubscription?,
+    onReadCharacteristic: (String, String) -> Unit,
     onSubscribe: (String, String, BleSubscriptionMode) -> Unit,
     onUnsubscribe: () -> Unit,
     onWriteCommand: (String, String, BleCharacteristicWriteType, TvCommand) -> Unit,
@@ -446,10 +469,10 @@ private fun CharacteristicItem(
     val activeMode = activeSubscription?.takeIf {
         it.serviceUuid == serviceUuid && it.characteristicUuid == characteristic.uuid
     }?.mode
+    val canRunGattOperation = connectionStatus == BleConnectionStatus.Connected &&
+        subscriptionStatus.canRunGattOperation()
     val canStartSubscription = connectionStatus == BleConnectionStatus.Connected &&
         subscriptionStatus.canStartSubscription()
-    val canQueueWrite = connectionStatus == BleConnectionStatus.Connected &&
-        subscriptionStatus.canRunGattOperation()
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(
             text = characteristic.uuid,
@@ -460,6 +483,15 @@ private fun CharacteristicItem(
             text = "Properties: ${characteristic.propertyLabels().joinToString()}",
             style = MaterialTheme.typography.bodySmall,
         )
+        if (characteristic.supportsRead()) {
+            OutlinedButton(
+                onClick = { onReadCharacteristic(serviceUuid, characteristic.uuid) },
+                enabled = canRunGattOperation,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Read")
+            }
+        }
         if (subscriptionModes.isNotEmpty()) {
             Text(
                 text = "Subscribe support: ${subscriptionModes.joinToString { it.name.lowercase() }}",
@@ -499,7 +531,7 @@ private fun CharacteristicItem(
                     TvCommand.entries.forEach { command ->
                         OutlinedButton(
                             onClick = { onWriteCommand(serviceUuid, characteristic.uuid, writeType, command) },
-                            enabled = canQueueWrite,
+                            enabled = canRunGattOperation,
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             Text("${command.displayName} (${command.payload().toDisplayHex()})")
@@ -641,6 +673,7 @@ private fun BleScanScreenPreview() {
                 onStopScan = {},
                 onConnectDevice = {},
                 onDisconnectDevice = {},
+                onReadCharacteristic = { _, _ -> },
                 onSubscribe = { _, _, _ -> },
                 onUnsubscribe = {},
                 onWriteCommand = { _, _, _, _ -> },
@@ -670,7 +703,9 @@ private fun BleSubscriptionStatus.canStartSubscription(): Boolean =
     this == BleSubscriptionStatus.Idle || this == BleSubscriptionStatus.Failed
 
 private fun BleSubscriptionStatus.canRunGattOperation(): Boolean =
-    this != BleSubscriptionStatus.Subscribing && this != BleSubscriptionStatus.Unsubscribing
+    this != BleSubscriptionStatus.Queued &&
+        this != BleSubscriptionStatus.Subscribing &&
+        this != BleSubscriptionStatus.Unsubscribing
 
 private fun BleSubscriptionStatus.canStopSubscription(): Boolean =
     this == BleSubscriptionStatus.Subscribed || this == BleSubscriptionStatus.Failed

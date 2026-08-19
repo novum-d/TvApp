@@ -61,6 +61,7 @@ class MainActivity : ComponentActivity() {
                             onStopScan = viewModel::stopScan,
                             onConnectDevice = viewModel::connect,
                             onDisconnectDevice = viewModel::disconnect,
+                            onReadCharacteristic = viewModel::readCharacteristic,
                             onSubscribe = viewModel::subscribe,
                             onUnsubscribe = viewModel::unsubscribe,
                             onWriteCommand = viewModel::writeCommand,
